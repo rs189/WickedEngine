@@ -4,6 +4,7 @@
 #include "wiGraphicsDevice.h"
 #include "wiResourceManager.h"
 #include "wiScene.h"
+#include "wiProfiler.h"
 
 namespace wi
 {
@@ -143,6 +144,8 @@ namespace wi
 		wi::renderer::VXGIResources vxgiResources;
 
 		wi::graphics::CommandList video_cmd;
+		wi::graphics::CommandList video_profiler_cmd;
+		wi::profiler::range_id video_prof;
 		wi::vector<wi::video::VideoInstance*> video_instances_tmp;
 
 		mutable const wi::graphics::Texture* lastPostprocessRT = &rtPostprocess;

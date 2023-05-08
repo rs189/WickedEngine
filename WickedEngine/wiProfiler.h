@@ -20,7 +20,7 @@ namespace wi::profiler
 	range_id BeginRangeGPU(const char* name, wi::graphics::CommandList cmd);
 
 	// End a profiling range
-	void EndRange(range_id id);
+	void EndRange(range_id id, wi::graphics::CommandList cmd = {});
 
 	// Renders a basic text of the Profiling results to the (x,y) screen coordinate
 	void DrawData(

@@ -243,7 +243,7 @@ namespace wi::profiler
 
 		return id;
 	}
-	void EndRange(range_id id)
+	void EndRange(range_id id, CommandList cmd)
 	{
 		if (!ENABLED || !initialized)
 			return;
@@ -268,7 +268,7 @@ namespace wi::profiler
 			{
 				GraphicsDevice* device = wi::graphics::GetDevice();
 				ranges[id].gpuEnd[queryheap_idx] = nextQuery.fetch_add(1);
-				device->QueryEnd(&queryHeap, it->second.gpuEnd[queryheap_idx], it->second.cmd);
+				device->QueryEnd(&queryHeap, it->second.gpuEnd[queryheap_idx], cmd.IsValid() ? cmd : it->second.cmd);
 			}
 		}
 		else

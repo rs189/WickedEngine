@@ -441,7 +441,7 @@ namespace wi::video
 			return false;
 		if (!has_flag(instance->flags, VideoInstance::Flags::InitialFirstFrameDecoded))
 			return true;
-		if (has_flag(instance->flags, VideoInstance::Flags::Playing) && instance->time_until_next_frame - dt <= 0)
+		//if (has_flag(instance->flags, VideoInstance::Flags::Playing) && instance->time_until_next_frame - dt <= 0)
 			return true;
 		return false;
 	}
@@ -457,8 +457,8 @@ namespace wi::video
 			if (!has_flag(instance->flags, VideoInstance::Flags::Playing))
 				return;
 			instance->time_until_next_frame -= dt;
-			if (instance->time_until_next_frame > 0)
-				return;
+			//if (instance->time_until_next_frame > 0)
+			//	return;
 			if (instance->current_frame >= (int)instance->video->frames_infos.size() - 1)
 			{
 				if (has_flag(instance->flags, VideoInstance::Flags::Looped))

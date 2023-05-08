@@ -669,6 +669,7 @@ namespace wi
 		camera_reflection.texture_vxgi_specular_index = -1;
 
 		video_cmd = {};
+		video_profiler_cmd = {};
 		if (scene->videos.GetCount() > 0)
 		{
 			for (size_t i = 0; i < scene->videos.GetCount(); ++i)
@@ -676,7 +677,10 @@ namespace wi
 				const wi::scene::VideoComponent& video = scene->videos[i];
 				if (wi::video::IsDecodingRequired(&video.videoinstance, dt))
 				{
+					video_profiler_cmd = device->BeginCommandList();
 					video_cmd = device->BeginCommandList(QUEUE_VIDEO_DECODE);
+					device->WaitCommandList(video_cmd, video_profiler_cmd);
+					video_prof = wi::profiler::BeginRangeGPU("Video Decode", video_profiler_cmd);
 					break;
 				}
 			}
@@ -707,6 +711,11 @@ namespace wi
 
 		// Preparing the frame:
 		CommandList cmd = device->BeginCommandList();
+		if (video_cmd.IsValid())
+		{
+			device->WaitCommandList(cmd, video_cmd);
+			wi::profiler::EndRange(video_prof, cmd);
+		}
 		CommandList cmd_prepareframe = cmd;
 		wi::renderer::ProcessDeferredMipGenRequests(cmd); // Execute it first thing in the frame here, on main thread, to not allow other thread steal it and execute on different command list!
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
@@ -857,10 +866,6 @@ namespace wi
 		//	must finish before "main scene opaque color pass")
 		cmd = device->BeginCommandList(QUEUE_COMPUTE);
 		device->WaitCommandList(cmd, cmd_maincamera_prepass);
-		if (video_cmd.IsValid())
-		{
-			device->WaitCommandList(cmd, video_cmd);
-		}
 		CommandList cmd_maincamera_compute_effects = cmd;
 		wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
 
