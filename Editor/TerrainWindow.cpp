@@ -310,6 +310,28 @@ PropWindow::PropWindow(wi::terrain::Prop* prop, wi::scene::Scene* scene)
 
 	constexpr auto elementSize = XMFLOAT2(100, 20);
 
+	// Search bar for object selection
+	propSelectionSearch.Create("");
+	propSelectionSearch.SetSize(elementSize);
+	//propSelectionSearch.SetPos(XMFLOAT2(0, 0));
+	//propSelectionSearch.OnInputAccepted([=](wi::gui::EventArgs args) {
+	//	meshCombo.ClearItems();
+	//	meshCombo.AddItem(propName, entity);
+	//	for (size_t i = 0; i < scene->objects.GetCount(); ++i)
+	//	{
+	//		const Entity ent = scene->objects.GetEntity(i);
+	//		const auto* name = scene->names.GetComponent(ent);
+	//		if (name != nullptr && name->name.find("chunk_") == 0)
+	//			continue;
+//
+	//		if (name != nullptr && name->name.find(args.sValue) != std::string::npos)
+	//		{
+	//			meshCombo.AddItem(name->name, ent);
+	//		}
+	//	}
+	//});
+	AddWidget(&propSelectionSearch);
+
 	meshCombo.Create("Object: ");
 	meshCombo.SetTooltip("Select object component");
 	meshCombo.SetSize(elementSize);
@@ -318,7 +340,24 @@ PropWindow::PropWindow(wi::terrain::Prop* prop, wi::scene::Scene* scene)
 	{
 		const Entity ent = scene->objects.GetEntity(i);
 		const auto* name = scene->names.GetComponent(ent);
-		meshCombo.AddItem(name != nullptr ? name->name : std::to_string(ent), ent);
+		if (name != nullptr && name->name.find("chunk_") == 0)
+			continue;
+
+		if (!propSelectionSearch.GetCurrentInputValue().empty())
+		{
+			//wi::backlog::post("[Editor] propSelectionSearch not empty: " + propSelectionSearch.GetCurrentInputValue());
+
+			if (name != nullptr && name->name.find(propSelectionSearch.GetCurrentInputValue()) != std::string::npos)
+			{
+				meshCombo.AddItem(name->name, ent);
+			}
+		}
+		else
+		{
+			//wi::backlog::post("[Editor] propSelectionSearch empty: " + propSelectionSearch.GetCurrentInputValue());
+
+			meshCombo.AddItem(name != nullptr ? name->name : std::to_string(ent), ent);
+		}
 	}
 	AddWidget(&meshCombo);
 
@@ -480,6 +519,7 @@ void PropWindow::ResizeLayout()
 		y += padding;
 	};
 
+	add(propSelectionSearch);
 	add(meshCombo);
 	add(minCountPerChunkInput);
 	add(maxCountPerChunkInput);
@@ -1356,10 +1396,17 @@ void TerrainWindow::SetEntity(Entity entity)
 			if (scene.names.Contains(entity))
 			{
 				const NameComponent& name = *scene.names.GetComponent(entity);
+				if (name.name.find("chunk_") == 0)
+					continue;
+
 				comboBox.AddItem(name.name, entity);
 			}
 			else
 			{
+				std::string name = std::to_string(entity);
+				if (name.find("chunk_") == 0)
+					continue;
+
 				comboBox.AddItem(std::to_string(entity), entity);
 			}
 

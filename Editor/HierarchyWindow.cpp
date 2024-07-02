@@ -32,6 +32,15 @@ void HierarchyWindow::Create(EditorComponent* _editor)
 	float hei = 20;
 	float wid = 200;
 
+	parentSelectionSearch.Create("");
+	parentSelectionSearch.SetShadowRadius(0);
+	parentSelectionSearch.SetSize(XMFLOAT2(wid, hei));
+	parentSelectionSearch.SetCancelInputEnabled(false);
+	parentSelectionSearch.OnInput([=](wi::gui::EventArgs args) {
+		parentCombo.ClearItems();
+	});
+	AddWidget(&parentSelectionSearch);
+
 	parentCombo.Create("Parent: ");
 	parentCombo.SetSize(XMFLOAT2(wid, hei));
 	parentCombo.SetPos(XMFLOAT2(x, y));
@@ -105,7 +114,34 @@ void HierarchyWindow::SetEntity(Entity entity)
 			continue;
 		}
 
-		const NameComponent* name = scene.names.GetComponent(candidate_parent_entity);
+		//const NameComponent* name = scene.names.GetComponent(candidate_parent_entity);
+		NameComponent* name = scene.names.GetComponent(candidate_parent_entity);
+
+		if (name == nullptr)
+		{
+			continue;
+		}
+
+		//
+		if (name->name.find("chunk_") == 0)
+				continue;
+		
+		std::string name_filter = parentSelectionSearch.GetCurrentInputValue();
+		if (!name_filter.empty())
+		{
+			wi::backlog::post("[Editor] parentSelectionSearch not empty: " + name_filter);
+
+			// Check if the search term "contains" the name:
+			if (name == nullptr || name->name.find(name_filter) == std::string::npos)
+			{
+				continue;
+			}
+		}
+		else
+		{
+			wi::backlog::post("[Editor] parentSelectionSearch empty: " + name_filter);
+		}
+
 		parentCombo.AddItem(name == nullptr ? std::to_string(candidate_parent_entity) : name->name, candidate_parent_entity);
 
 		if (hier != nullptr && hier->parentID == candidate_parent_entity)

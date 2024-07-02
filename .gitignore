@@ -222,3 +222,15 @@ wiShaderdump.h
 *.a
 *.elf
 *.prx
+
+Template_Windows/*
+Template_Windows/
+Template_Windows/Template_Windows.vcxproj
+Template_Windows/Template_Windows.vcxproj.filters
+Template_Windows/Template_Windows.rc
+
+Content/*
+Content/
+
+.vscode/
+.github/

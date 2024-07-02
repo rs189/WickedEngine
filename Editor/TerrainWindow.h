@@ -49,6 +49,7 @@ struct HeightmapModifierWindow : public ModifierWindow
 
 struct PropWindow : public wi::gui::Window
 {
+	wi::gui::TextInputField propSelectionSearch;
 	wi::gui::ComboBox meshCombo;
 	wi::gui::TextInputField minCountPerChunkInput;
 	wi::gui::TextInputField maxCountPerChunkInput;

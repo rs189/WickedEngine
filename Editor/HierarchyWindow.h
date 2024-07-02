@@ -12,6 +12,7 @@ public:
 	wi::ecs::Entity entity;
 	void SetEntity(wi::ecs::Entity entity);
 
+	wi::gui::TextInputField parentSelectionSearch;
 	wi::gui::ComboBox parentCombo;
 
 	void ResizeLayout() override;
