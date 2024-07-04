@@ -234,3 +234,5 @@ Content/
 
 .vscode/
 .github/
+Editor/config.ini
+Editor/screenshots/

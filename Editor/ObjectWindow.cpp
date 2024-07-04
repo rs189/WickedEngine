@@ -279,6 +279,15 @@ void ObjectWindow::Create(EditorComponent* _editor)
 	float step = hei + 2;
 	float wid = 130;
 
+	meshSelectionSearch.Create("");
+	meshSelectionSearch.SetShadowRadius(0);
+	meshSelectionSearch.SetSize(XMFLOAT2(wid, hei));
+	meshSelectionSearch.SetCancelInputEnabled(false);
+	meshSelectionSearch.OnInput([=](wi::gui::EventArgs args) {
+		meshCombo.ClearItems();
+	});
+	AddWidget(&meshSelectionSearch);
+
 	meshCombo.Create("Mesh: ");
 	meshCombo.SetSize(XMFLOAT2(wid, hei));
 	meshCombo.OnSelect([=](wi::gui::EventArgs args) {
@@ -949,7 +958,35 @@ void ObjectWindow::SetEntity(Entity entity)
 		for (size_t i = 0; i < scene.meshes.GetCount(); ++i)
 		{
 			Entity meshID = scene.meshes.GetEntity(i);
-			const NameComponent* name = scene.names.GetComponent(meshID);
+			//const NameComponent* name = scene.names.GetComponent(meshID);
+			NameComponent* name = scene.names.GetComponent(meshID);
+
+			if (name == nullptr)
+			{
+				continue;
+			}
+
+			//
+			if (name->name.find("chunk_") == 0)
+					continue;
+
+			std::string name_filter = meshSelectionSearch.GetCurrentInputValue();
+			if (!name_filter.empty())
+			{
+				//wi::backlog::post("[Editor] meshSelectionSearch not empty: " + name_filter);
+
+				// Check if the search term "contains" the name:
+				if (name == nullptr || name->name.find(name_filter) == std::string::npos)
+				{
+					continue;
+				}
+			}
+			else
+			{
+				//wi::backlog::post("[Editor] meshSelectionSearch empty: " + name_filter);
+			}
+
+
 			if (name == nullptr)
 			{
 				meshCombo.AddItem(std::to_string(meshID), (uint64_t)meshID);

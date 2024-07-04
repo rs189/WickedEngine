@@ -14,6 +14,7 @@ public:
 	wi::gui::Label meshInfoLabel;
 	wi::gui::Button subsetRemoveButton;
 	wi::gui::ComboBox subsetComboBox;
+	wi::gui::TextInputField subsetMaterialSelectionSearch;
 	wi::gui::ComboBox subsetMaterialComboBox;
 	wi::gui::CheckBox doubleSidedCheckBox;
 	wi::gui::CheckBox doubleSidedShadowCheckBox;

@@ -686,6 +686,14 @@ void MeshWindow::Create(EditorComponent* _editor)
 	});
 	AddWidget(&exportHeaderButton);
 
+	subsetMaterialSelectionSearch.Create("");
+	subsetMaterialSelectionSearch.SetShadowRadius(0);
+	subsetMaterialSelectionSearch.SetSize(XMFLOAT2(wid, hei));
+	subsetMaterialSelectionSearch.SetCancelInputEnabled(false);
+	subsetMaterialSelectionSearch.OnInput([=](wi::gui::EventArgs args) {
+		subsetMaterialComboBox.ClearItems();
+	});
+	AddWidget(&subsetMaterialSelectionSearch);
 
 	subsetMaterialComboBox.Create("Material: ");
 	subsetMaterialComboBox.SetSize(XMFLOAT2(wid, hei));
@@ -710,7 +718,6 @@ void MeshWindow::Create(EditorComponent* _editor)
 		});
 	subsetMaterialComboBox.SetTooltip("Set the base material of the selected MeshSubset");
 	AddWidget(&subsetMaterialComboBox);
-
 
 	morphTargetCombo.Create("Morph Target:");
 	morphTargetCombo.SetSize(XMFLOAT2(wid, hei));
@@ -961,13 +968,36 @@ void MeshWindow::SetEntity(Entity entity, int subset)
 		{
 			Entity entity = scene.materials.GetEntity(i);
 
+			std::string name_filter = subsetMaterialSelectionSearch.GetCurrentInputValue();
+
 			if (scene.names.Contains(entity))
 			{
-				const NameComponent& name = *scene.names.GetComponent(entity);
-				subsetMaterialComboBox.AddItem(name.name);
+				//const NameComponent& name = *scene.names.GetComponent(entity);
+				NameComponent* name = scene.names.GetComponent(entity);
+				if (name == nullptr)
+					continue;
+
+				if (name->name.find("chunk_") == 0)
+					continue;
+
+				if (!name_filter.empty())
+				{
+					if (name == nullptr || name->name.find(name_filter) == std::string::npos)
+						continue;
+				}
+
+				subsetMaterialComboBox.AddItem(name->name);
 			}
 			else
 			{
+				std::string entityMaterialName = std::to_string(entity);
+
+				if (!name_filter.empty())
+				{
+					if (entityMaterialName.find(name_filter) == std::string::npos)
+						continue;
+				}
+
 				subsetMaterialComboBox.AddItem(std::to_string(entity));
 			}
 

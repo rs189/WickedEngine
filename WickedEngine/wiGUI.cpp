@@ -2779,6 +2779,16 @@ namespace wi::gui
 	{
 		if (index >= 0)
 		{
+			// Check if index is out of bounds of items array
+			if (index >= (int)items.size())
+			{
+				return "";
+			}
+
+			Item item = items[index];
+			std::string itemsName = item.name;
+			if (itemsName.empty())
+				return "";
 			return items[index].name;
 		}
 		return "";
@@ -2787,6 +2797,11 @@ namespace wi::gui
 	{
 		if (index >= 0)
 		{
+			if (index >= (int)items.size())
+			{
+				return 0;
+			}
+
 			return items[index].userdata;
 		}
 		return 0;

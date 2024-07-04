@@ -10,6 +10,7 @@ public:
 	wi::ecs::Entity entity;
 	void SetEntity(wi::ecs::Entity entity);
 
+	wi::gui::TextInputField meshSelectionSearch;
 	wi::gui::ComboBox meshCombo;
 	wi::gui::CheckBox renderableCheckBox;
 	wi::gui::CheckBox shadowCheckBox;

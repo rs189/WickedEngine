@@ -118,28 +118,16 @@ void HierarchyWindow::SetEntity(Entity entity)
 		NameComponent* name = scene.names.GetComponent(candidate_parent_entity);
 
 		if (name == nullptr)
-		{
 			continue;
-		}
 
-		//
 		if (name->name.find("chunk_") == 0)
 				continue;
 		
 		std::string name_filter = parentSelectionSearch.GetCurrentInputValue();
 		if (!name_filter.empty())
 		{
-			wi::backlog::post("[Editor] parentSelectionSearch not empty: " + name_filter);
-
-			// Check if the search term "contains" the name:
 			if (name == nullptr || name->name.find(name_filter) == std::string::npos)
-			{
 				continue;
-			}
-		}
-		else
-		{
-			wi::backlog::post("[Editor] parentSelectionSearch empty: " + name_filter);
 		}
 
 		parentCombo.AddItem(name == nullptr ? std::to_string(candidate_parent_entity) : name->name, candidate_parent_entity);
