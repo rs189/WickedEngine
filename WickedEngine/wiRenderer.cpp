@@ -859,6 +859,9 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_IMPOSTOR], "impostorPS.cso"); });
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_HOLOGRAM], "objectPS_hologram.cso"); });
+	
+	// custom shaders
+	//wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_SLIME], "objectPS_slime.cso"); });
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_DEBUG], "objectPS_debug.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_PAINTRADIUS], "objectPS_paintradius.cso"); });
@@ -1234,7 +1237,6 @@ void LoadShaders()
 		customShader.pso[RENDERPASS_MAIN] = pso;
 		RegisterCustomShader(customShader);
 		});
-
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) {
 		PipelineStateDesc desc;
@@ -1724,8 +1726,6 @@ void LoadShaders()
 
 	wi::jobsystem::Wait(ctx);
 
-	
-
 	for (uint32_t renderPass = 0; renderPass < RENDERPASS_COUNT; ++renderPass)
 	{
 		// default objectshaders:
@@ -1954,7 +1954,33 @@ void LoadShaders()
 		}
 	}
 
+	// Custom shaders
+	LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_SLIME], "objectPS_slime.cso");
+
+	// Hologram sample shader will be registered as custom shader:
+	//wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) {
+		SHADERTYPE realVS = GetVSTYPE(RENDERPASS_MAIN, false, false, true);
+
+		PipelineStateDesc desc;
+		desc.vs = &shaders[realVS];
+		desc.ps = &shaders[PSTYPE_OBJECT_SLIME];
+
+		desc.bs = &blendStates[BSTYPE_ADDITIVE];
+		desc.rs = &rasterizers[RSTYPE_FRONT];
+		desc.dss = &depthStencils[DSSTYPE_HOLOGRAM];
+		desc.pt = PrimitiveTopology::TRIANGLELIST;
+
+		PipelineState pso;
+		device->CreatePipelineState(&desc, &pso);
+
+		CustomShader customShader;
+		customShader.name = "Slime";
+		customShader.filterMask = FILTER_TRANSPARENT;
+		customShader.pso[RENDERPASS_MAIN] = pso;
+		RegisterCustomShader(customShader);
+		//});
 }
+
 void LoadBuffers()
 {
 	GPUBufferDesc bd;
