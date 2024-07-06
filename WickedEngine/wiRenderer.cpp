@@ -2851,8 +2851,6 @@ void RenderMeshes(
 			device->BindDynamicConstantBuffer(cb, CB_GETBINDSLOT(ForwardEntityMaskCB), cmd);
 		}
 
-		bool index_buffer_set_for_mesh = false;
-
 		uint32_t first_subset = 0;
 		uint32_t last_subset = 0;
 		mesh.GetLODSubsetRange(instancedBatch.lod, first_subset, last_subset);
@@ -2948,8 +2946,6 @@ void RenderMeshes(
 				// depth only alpha test will be full res
 				device->BindShadingRate(material.shadingRate, cmd);
 			}
-
-			assert(subsetIndex < 256u); // subsets must be represented as 8-bit
 
 			ObjectPushConstants push;
 			push.geometryIndex = mesh.geometryOffset + subsetIndex;
@@ -4767,7 +4763,7 @@ void UpdateRenderDataAsync(
 		if (!occluded)
 		{
 			auto range = wi::profiler::BeginRangeGPU("Ocean - Simulate", cmd);
-			vis.scene->ocean.UpdateDisplacementMap(vis.scene->weather.oceanParameters, cmd);
+			vis.scene->ocean.UpdateDisplacementMap(cmd);
 			wi::profiler::EndRange(range);
 		}
 	}
@@ -6211,7 +6207,7 @@ void DrawScene(
 	{
 		if (!occlusion || !vis.scene->ocean.IsOccluded())
 		{
-			vis.scene->ocean.Render(*vis.camera, vis.scene->weather.oceanParameters, cmd);
+			vis.scene->ocean.Render(*vis.camera, cmd);
 		}
 	}
 
