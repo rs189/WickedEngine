@@ -58,6 +58,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_WICKEDENGINEGAME));
 
+	wi::renderer::SetShaderSourcePath(wi::helper::GetCurrentPath() + "/../shaders/");
+	wi::renderer::SetShaderPath(wi::helper::GetCurrentPath() + "/../../bin/shaders/");
 
 	MSG msg = { 0 };
 	while (msg.message != WM_QUIT)

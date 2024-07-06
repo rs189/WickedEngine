@@ -862,9 +862,6 @@ void LoadShaders()
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_HOLOGRAM], "objectPS_hologram.cso"); });
 	
-	// custom shaders
-	//wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_SLIME], "objectPS_slime.cso"); });
-
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_DEBUG], "objectPS_debug.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_PAINTRADIUS], "objectPS_paintradius.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_SIMPLE], "objectPS_simple.cso"); });
@@ -1730,6 +1727,29 @@ void LoadShaders()
 		RegisterCustomShader(customShader);
 	}
 
+	// Custom shaders
+	LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_SLIME], "objectPS_slime.cso");
+
+	// Slime shader will be registered as custom shader:
+	SHADERTYPE realVS = GetVSTYPE(RENDERPASS_MAIN, false, false, true);
+
+	PipelineStateDesc desc;
+	desc.vs = &shaders[realVS];
+	desc.ps = &shaders[PSTYPE_OBJECT_SLIME];
+
+	desc.bs = &blendStates[BSTYPE_OPAQUE];
+	desc.rs = &rasterizers[RSTYPE_FRONT];
+	desc.dss = &depthStencils[DSSTYPE_DEFAULT];
+	desc.pt = PrimitiveTopology::TRIANGLELIST;
+
+	PipelineState pso;
+	device->CreatePipelineState(&desc, &pso);
+
+	CustomShader customShader;
+	customShader.name = "Slime";
+	customShader.filterMask = FILTER_TRANSPARENT;
+	customShader.pso[RENDERPASS_MAIN] = pso;
+	RegisterCustomShader(customShader);
 
 	wi::jobsystem::Wait(ctx);
 
@@ -1960,32 +1980,6 @@ void LoadShaders()
 			});
 		}
 	}
-
-	// Custom shaders
-	LoadShader(ShaderStage::PS, shaders[PSTYPE_OBJECT_SLIME], "objectPS_slime.cso");
-
-	// Hologram sample shader will be registered as custom shader:
-	//wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) {
-		SHADERTYPE realVS = GetVSTYPE(RENDERPASS_MAIN, false, false, true);
-
-		PipelineStateDesc desc;
-		desc.vs = &shaders[realVS];
-		desc.ps = &shaders[PSTYPE_OBJECT_SLIME];
-
-		desc.bs = &blendStates[BSTYPE_ADDITIVE];
-		desc.rs = &rasterizers[RSTYPE_FRONT];
-		desc.dss = &depthStencils[DSSTYPE_HOLOGRAM];
-		desc.pt = PrimitiveTopology::TRIANGLELIST;
-
-		PipelineState pso;
-		device->CreatePipelineState(&desc, &pso);
-
-		CustomShader customShader;
-		customShader.name = "Slime";
-		customShader.filterMask = FILTER_TRANSPARENT;
-		customShader.pso[RENDERPASS_MAIN] = pso;
-		RegisterCustomShader(customShader);
-		//});
 }
 
 void LoadBuffers()
