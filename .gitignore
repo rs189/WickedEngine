@@ -232,10 +232,10 @@ Template_Windows/Template_Windows.rc
 Template_Linux/*
 Template_Linux/
 
-Content/*
-Content/
-
 .vscode/
 .github/
 Editor/config.ini
 Editor/screenshots/
+
+build/
+build/*
