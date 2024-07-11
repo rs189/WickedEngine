@@ -200,6 +200,12 @@ namespace wi::renderer
 		wi::graphics::CommandList cmd
 	);
 
+	// Updates the ocean, can be on async compute
+	void UpdateOcean(
+		const Visibility& vis,
+		wi::graphics::CommandList cmd
+	);
+
 	void UpdateRaytracingAccelerationStructures(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
 
 	// Binds all common constant buffers and samplers that may be used in all shaders
@@ -303,8 +309,10 @@ namespace wi::renderer
 	void RefreshEnvProbes(const Visibility& vis, wi::graphics::CommandList cmd);
 	// Call once per frame to re-render out of date impostors
 	void RefreshImpostors(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
-	// Call once per frame to repack out of date lightmaps in the atlas
+	// Call once per frame to render lightmaps
 	void RefreshLightmaps(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
+	// Call once per frame to render wetmaps
+	void RefreshWetmaps(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
 	// Run a compute shader that will resolve a MSAA depth buffer to a single-sample texture
 	void ResolveMSAADepthBuffer(const wi::graphics::Texture& dst, const wi::graphics::Texture& src, wi::graphics::CommandList cmd);
 	void DownsampleDepthBuffer(const wi::graphics::Texture& src, wi::graphics::CommandList cmd);

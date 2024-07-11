@@ -1012,6 +1012,8 @@ namespace wi
 				cmd
 			);
 
+			wi::renderer::RefreshWetmaps(*scene, cmd);
+
 			wi::renderer::Visibility_Prepare(
 				visibilityResources,
 				rtPrimitiveID_render,
@@ -1329,6 +1331,14 @@ namespace wi
 				wi::profiler::EndRange(range); // Planar Reflections
 				device->EventEnd(cmd);
 			});
+		}
+
+		if (scene->weather.IsOceanEnabled())
+		{
+			// Ocean simulation can be updated async to opaque passes:
+			CommandList cmd_ocean = device->BeginCommandList(QUEUE_COMPUTE);
+			device->WaitCommandList(cmd_ocean, cmd);
+			wi::renderer::UpdateOcean(visibility_main, cmd_ocean);
 		}
 
 		// Main camera opaque color pass:
@@ -1961,53 +1971,22 @@ namespace wi
 		Rect scissor = GetScissorInternalResolution();
 		device->BindScissorRects(1, &scissor, cmd);
 
-		// Transparent scene
-		{
-			auto range = wi::profiler::BeginRangeGPU("Transparent Scene", cmd);
-			device->EventBegin("Transparent Scene", cmd);
+		Viewport vp;
+		vp.width = (float)depthBuffer_Main.GetDesc().width;
+		vp.height = (float)depthBuffer_Main.GetDesc().height;
+		vp.min_depth = 0;
+		vp.max_depth = 1;
+		device->BindViewports(1, &vp, cmd);
 
-			Viewport vp;
-			vp.width = (float)depthBuffer_Main.GetDesc().width;
-			vp.height = (float)depthBuffer_Main.GetDesc().height;
+		// Draw only the ocean first, fog and lightshafts will be blended on top:
+		wi::renderer::DrawScene(
+			visibility_main,
+			RENDERPASS_MAIN,
+			cmd,
+			wi::renderer::DRAWSCENE_OCEAN
+		);
 
-			// Foreground:
-			vp.min_depth = 1 - foreground_depth_range;
-			vp.max_depth = 1;
-			device->BindViewports(1, &vp, cmd);
-			wi::renderer::DrawScene(
-				visibility_main,
-				RENDERPASS_MAIN,
-				cmd,
-				wi::renderer::DRAWSCENE_TRANSPARENT |
-				wi::renderer::DRAWSCENE_FOREGROUND_ONLY |
-				wi::renderer::DRAWSCENE_MAINCAMERA
-			);
-
-			// Regular:
-			vp.min_depth = 0;
-			vp.max_depth = 1;
-			device->BindViewports(1, &vp, cmd);
-			wi::renderer::DrawScene(
-				visibility_main,
-				RENDERPASS_MAIN,
-				cmd,
-				wi::renderer::DRAWSCENE_TRANSPARENT |
-				wi::renderer::DRAWSCENE_TESSELLATION |
-				wi::renderer::DRAWSCENE_OCCLUSIONCULLING |
-				wi::renderer::DRAWSCENE_OCEAN |
-				wi::renderer::DRAWSCENE_MAINCAMERA
-			);
-
-			device->EventEnd(cmd);
-			wi::profiler::EndRange(range); // Transparent Scene
-		}
-
-		wi::renderer::DrawDebugWorld(*scene, *camera, *this, cmd);
-
-		wi::renderer::DrawLightVisualizers(visibility_main, cmd);
-
-		wi::renderer::DrawSoftParticles(visibility_main, false, cmd);
-		wi::renderer::DrawSpritesAndFonts(*scene, *camera, false, cmd);
+		// Note: volumetrics and light shafts are blended before transparent scene, because they used depth of the opaques
 
 		if (getVolumeLightsEnabled() && visibility_main.IsRequestedVolumetricLights())
 		{
@@ -2033,6 +2012,49 @@ namespace wi
 			wi::image::Draw(&rtSun[1], fx, cmd);
 			device->EventEnd(cmd);
 		}
+
+		// Transparent scene
+		{
+			auto range = wi::profiler::BeginRangeGPU("Transparent Scene", cmd);
+			device->EventBegin("Transparent Scene", cmd);
+
+			// Foreground:
+			vp.min_depth = 1 - foreground_depth_range;
+			vp.max_depth = 1;
+			device->BindViewports(1, &vp, cmd);
+			wi::renderer::DrawScene(
+				visibility_main,
+				RENDERPASS_MAIN,
+				cmd,
+				wi::renderer::DRAWSCENE_TRANSPARENT |
+				wi::renderer::DRAWSCENE_FOREGROUND_ONLY |
+				wi::renderer::DRAWSCENE_MAINCAMERA
+			);
+
+			// Regular:
+			vp.min_depth = 0;
+			vp.max_depth = 1;
+			device->BindViewports(1, &vp, cmd);
+			wi::renderer::DrawScene(
+				visibility_main,
+				RENDERPASS_MAIN,
+				cmd,
+				wi::renderer::DRAWSCENE_TRANSPARENT |
+				wi::renderer::DRAWSCENE_TESSELLATION |
+				wi::renderer::DRAWSCENE_OCCLUSIONCULLING |
+				wi::renderer::DRAWSCENE_MAINCAMERA
+			);
+
+			device->EventEnd(cmd);
+			wi::profiler::EndRange(range); // Transparent Scene
+		}
+
+		wi::renderer::DrawDebugWorld(*scene, *camera, *this, cmd);
+
+		wi::renderer::DrawLightVisualizers(visibility_main, cmd);
+
+		wi::renderer::DrawSoftParticles(visibility_main, false, cmd);
+		wi::renderer::DrawSpritesAndFonts(*scene, *camera, false, cmd);
 
 		if (getLensFlareEnabled())
 		{

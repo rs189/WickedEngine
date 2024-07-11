@@ -1134,6 +1134,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VIRTUALTEXTURE_RESIDENCYUPDATE], "virtualTextureResidencyUpdateCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_WIND], "windCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_YUV_TO_RGB], "yuv_to_rgbCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_WETMAP_UPDATE], "wetmap_updateCS.cso"); });
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::HS, shaders[HSTYPE_OBJECT], "objectHS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::HS, shaders[HSTYPE_OBJECT_PREPASS], "objectHS_prepass.cso"); });
@@ -4752,22 +4753,6 @@ void UpdateRenderDataAsync(
 		wi::profiler::EndRange(range);
 	}
 
-	// Compute water simulation:
-	if (vis.scene->weather.IsOceanEnabled())
-	{
-		bool occluded = false;
-		if (vis.flags & Visibility::ALLOW_OCCLUSION_CULLING)
-		{
-			occluded = vis.scene->ocean.IsOccluded();
-		}
-		if (!occluded)
-		{
-			auto range = wi::profiler::BeginRangeGPU("Ocean - Simulate", cmd);
-			vis.scene->ocean.UpdateDisplacementMap(cmd);
-			wi::profiler::EndRange(range);
-		}
-	}
-
 	for (size_t i = 0; i < vis.scene->terrains.GetCount(); ++i)
 	{
 		vis.scene->terrains[i].UpdateVirtualTexturesGPU(cmd);
@@ -4794,6 +4779,25 @@ void TextureStreamingReadbackCopy(
 			&scene.textureStreamingFeedbackBuffer,
 			cmd
 		);
+	}
+}
+
+void UpdateOcean(
+	const Visibility& vis,
+	CommandList cmd
+)
+{
+	bool occluded = false;
+	if (vis.flags & wi::renderer::Visibility::ALLOW_OCCLUSION_CULLING)
+	{
+		occluded = vis.scene->ocean.IsOccluded();
+	}
+	if (!occluded)
+	{
+		auto range = wi::profiler::BeginRangeGPU("Ocean - Simulate", cmd);
+		wi::renderer::BindCommonResources(cmd);
+		vis.scene->ocean.UpdateDisplacementMap(cmd);
+		wi::profiler::EndRange(range);
 	}
 }
 
@@ -6227,42 +6231,45 @@ void DrawScene(
 		filterMask = FILTER_ALL;
 	}
 
-	static thread_local RenderQueue renderQueue;
-	renderQueue.init();
-	for (uint32_t instanceIndex : vis.visibleObjects)
+	if (opaque || transparent)
 	{
-		if (occlusion && vis.scene->occlusion_results_objects[instanceIndex].IsOccluded())
-			continue;
-
-		const ObjectComponent& object = vis.scene->objects[instanceIndex];
-		if (!object.IsRenderable())
-			continue;
-		if (foreground != object.IsForeground())
-			continue;
-		if (maincamera && object.IsNotVisibleInMainCamera())
-			continue;
-		if (skip_planar_reflection_objects && object.IsNotVisibleInReflections())
-			continue;
-		if ((object.GetFilterMask() & filterMask) == 0)
-			continue;
-
-		const float distance = wi::math::Distance(vis.camera->Eye, object.center);
-		if (distance > object.fadeDistance + object.radius)
-			continue;
-
-		renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
-	}
-	if (!renderQueue.empty())
-	{
-		if (transparent)
+		static thread_local RenderQueue renderQueue;
+		renderQueue.init();
+		for (uint32_t instanceIndex : vis.visibleObjects)
 		{
-			renderQueue.sort_transparent();
+			if (occlusion && vis.scene->occlusion_results_objects[instanceIndex].IsOccluded())
+				continue;
+
+			const ObjectComponent& object = vis.scene->objects[instanceIndex];
+			if (!object.IsRenderable())
+				continue;
+			if (foreground != object.IsForeground())
+				continue;
+			if (maincamera && object.IsNotVisibleInMainCamera())
+				continue;
+			if (skip_planar_reflection_objects && object.IsNotVisibleInReflections())
+				continue;
+			if ((object.GetFilterMask() & filterMask) == 0)
+				continue;
+
+			const float distance = wi::math::Distance(vis.camera->Eye, object.center);
+			if (distance > object.fadeDistance + object.radius)
+				continue;
+
+			renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
 		}
-		else
+		if (!renderQueue.empty())
 		{
-			renderQueue.sort_opaque();
+			if (transparent)
+			{
+				renderQueue.sort_transparent();
+			}
+			else
+			{
+				renderQueue.sort_opaque();
+			}
+			RenderMeshes(vis, renderQueue, renderPass, filterMask, cmd, flags);
 		}
-		RenderMeshes(vis, renderQueue, renderPass, filterMask, cmd, flags);
 	}
 
 	if (impostor)
@@ -9891,7 +9898,16 @@ void RefreshLightmaps(const Scene& scene, CommandList cmd)
 				cb.xTraceSampleIndex = object.lightmapIterationCount;
 				device->BindDynamicConstantBuffer(cb, CB_GETBINDSLOT(RaytracingCB), cmd);
 
-				device->DrawIndexed((uint32_t)mesh.indices.size(), 0, 0, cmd);
+				uint32_t first_subset = 0;
+				uint32_t last_subset = 0;
+				mesh.GetLODSubsetRange(0, first_subset, last_subset);
+				for (uint32_t subsetIndex = first_subset; subsetIndex < last_subset; ++subsetIndex)
+				{
+					const MeshComponent::MeshSubset& subset = mesh.subsets[subsetIndex];
+					if (subset.indexCount == 0)
+						continue;
+					device->DrawIndexed(subset.indexCount, subset.indexOffset, 0, cmd);
+				}
 				object.lightmapIterationCount++;
 
 				device->RenderPassEnd(cmd);
@@ -9902,6 +9918,44 @@ void RefreshLightmaps(const Scene& scene, CommandList cmd)
 
 		wi::profiler::EndRange(range);
 	}
+}
+
+void RefreshWetmaps(const Scene& scene, CommandList cmd)
+{
+	if (!scene.weather.IsOceanEnabled())
+		return;
+
+	auto range = wi::profiler::BeginRangeGPU("Wetmap Processing", cmd);
+	device->EventBegin("RefreshWetmaps", cmd);
+
+	BindCommonResources(cmd);
+	device->BindComputeShader(&shaders[CSTYPE_WETMAP_UPDATE], cmd);
+
+	for (uint32_t objectIndex = 0; objectIndex < scene.objects.GetCount(); ++objectIndex)
+	{
+		const ObjectComponent& object = scene.objects[objectIndex];
+		if (!object.wetmap.IsValid())
+			continue;
+
+		uint32_t vertexCount = uint32_t(object.wetmap.desc.size / GetFormatStride(object.wetmap.desc.format));
+
+		WetmapPush push = {};
+		push.wetmap = device->GetDescriptorIndex(&object.wetmap, SubresourceType::UAV);
+
+		if (push.wetmap < 0)
+			continue;
+
+		push.instanceID = objectIndex;
+		push.iteration = object.wetmapIterationCount;
+		device->PushConstants(&push, sizeof(push), cmd);
+
+		device->Dispatch((vertexCount + 63u) / 64u, 1, 1, cmd);
+
+		object.wetmapIterationCount++;
+	}
+
+	device->EventEnd(cmd);
+	wi::profiler::EndRange(range);
 }
 
 void BindCommonResources(CommandList cmd)
