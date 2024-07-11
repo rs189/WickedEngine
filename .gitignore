@@ -229,6 +229,9 @@ Template_Windows/Template_Windows.vcxproj
 Template_Windows/Template_Windows.vcxproj.filters
 Template_Windows/Template_Windows.rc
 
+Template_Linux/*
+Template_Linux/
+
 Content/*
 Content/
 
