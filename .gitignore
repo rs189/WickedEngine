@@ -229,10 +229,13 @@ Template_Windows/Template_Windows.vcxproj
 Template_Windows/Template_Windows.vcxproj.filters
 Template_Windows/Template_Windows.rc
 
-Content/*
-Content/
+Template_Linux/*
+Template_Linux/
 
 .vscode/
 .github/
 Editor/config.ini
 Editor/screenshots/
+
+build/
+build/*

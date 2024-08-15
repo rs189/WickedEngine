@@ -120,7 +120,12 @@ inline void light_directional(in ShaderEntity light, in Surface surface, inout L
 			lighting.direct.diffuse = mad(light_color, BRDF_GetDiffuse(surface, surface_to_light), lighting.direct.diffuse);
 			lighting.direct.specular = mad(light_color, BRDF_GetSpecular(surface, surface_to_light), lighting.direct.specular);
 
-#ifndef WATER
+#ifdef WATER
+			// Water extinction scattering:
+			const float scattering = ComputeScattering(saturate(dot(L, -surface.V)));
+			lighting.direct.specular += scattering * light_color * (1 - surface.extinction) * (1 - sqr(1 - saturate(1 - surface.N.y)));
+#else
+			// On non-water surfaces there can be procedural caustic if it's under ocean:
 			const ShaderOcean ocean = GetWeather().ocean;
 			if (ocean.texture_displacementmap >= 0)
 			{
@@ -134,6 +139,10 @@ inline void light_directional(in ShaderEntity light, in Surface surface, inout L
 					caustic *= sqr(saturate((water_height - surface.P.y) * 0.5)); // fade out at shoreline
 					caustic *= light_color;
 					lighting.indirect.diffuse += caustic;
+
+					// fade out specular at depth, it looks weird when specular appears under ocean from wetmap
+					float water_depth = water_height - surface.P.y;
+					lighting.direct.specular *= saturate(exp(-water_depth * 10));
 				}
 			}
 #endif // WATER
@@ -241,7 +250,12 @@ inline void light_point(in ShaderEntity light, in Surface surface, inout Lightin
 #endif // DISABLE_AREA_LIGHTS
 
 				lighting.direct.specular = mad(light_color, BRDF_GetSpecular(surface, surface_to_light), lighting.direct.specular);
-
+				
+#ifdef WATER
+				// Water extinction scattering:
+				const float scattering = ComputeScattering(saturate(dot(L, -surface.V)));
+				lighting.direct.specular += scattering * light_color * (1 - surface.extinction) * (1 - sqr(1 - saturate(1 - surface.N.y)));
+#endif // WATER
 			}
 		}
 	}
@@ -324,6 +338,12 @@ inline void light_spot(in ShaderEntity light, in Surface surface, inout Lighting
 #endif // DISABLE_AREA_LIGHTS
 
 					lighting.direct.specular = mad(light_color, BRDF_GetSpecular(surface, surface_to_light), lighting.direct.specular);
+					
+#ifdef WATER
+					// Water extinction scattering:
+					const float scattering = ComputeScattering(saturate(dot(L, -surface.V)));
+					lighting.direct.specular += scattering * light_color * (1 - surface.extinction) * (1 - sqr(1 - saturate(1 - surface.N.y)));
+#endif // WATER
 				}
 			}
 		}
