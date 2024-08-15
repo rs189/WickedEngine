@@ -1,5 +1,5 @@
-#define DISABLE_SOFT_SHADOWMAP
 #define TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK // fix the lack of depth testing
+#define DISABLE_SOFT_SHADOWMAP
 #include "volumetricLightHF.hlsli"
 #include "volumetricCloudsHF.hlsli"
 #include "fogHF.hlsli"
@@ -7,7 +7,7 @@
 
 float4 main(VertexToPixel input) : SV_TARGET
 {
-	ShaderEntity light = load_entity(GetFrame().lightarray_offset + (uint)g_xColor.x);
+	ShaderEntity light = load_entity(directional_lights().first_item() + (uint)g_xColor.x);
 	
 	float2 ScreenCoord = input.pos2D.xy / input.pos2D.w * float2(0.5f, -0.5f) + 0.5f;
 	float4 depths = texture_depth.GatherRed(sampler_point_clamp, ScreenCoord);
@@ -59,7 +59,7 @@ float4 main(VertexToPixel input) : SV_TARGET
 			[branch]
 			if (is_saturated(shadow_uv))
 			{
-				shadow *= shadow_2D(light, shadow_pos, shadow_uv.xy, cascade);
+				shadow *= shadow_2D(light, shadow_pos, shadow_uv.xy, cascade, input.pos.xy);
 				break;
 			}
 		}

@@ -230,6 +230,7 @@ wi::vector<ShaderEntry> shaders = {
 	{"windCS", wi::graphics::ShaderStage::CS },
 	{"yuv_to_rgbCS", wi::graphics::ShaderStage::CS },
 	{"wetmap_updateCS", wi::graphics::ShaderStage::CS },
+	{"causticsCS", wi::graphics::ShaderStage::CS },
 
 
 	{"emittedparticlePS_soft", wi::graphics::ShaderStage::PS },
@@ -566,6 +567,11 @@ int main(int argc, char* argv[])
 					if (target.format == ShaderFormat::PS5 && (input.minshadermodel >= ShaderModel::SM_6_5 || input.stage == ShaderStage::MS))
 					{
 						// TODO PS5 raytracing, mesh shader
+						return;
+					}
+					if (target.format == ShaderFormat::HLSL6_XS && input.stage == ShaderStage::MS)
+					{
+						// TODO Xbox mesh shader
 						return;
 					}
 

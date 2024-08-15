@@ -32,11 +32,11 @@ namespace wi::scene
 		wi::ecs::ComponentManager<LayerComponent>& layers = componentLibrary.Register<LayerComponent>("wi::scene::Scene::layers");
 		wi::ecs::ComponentManager<TransformComponent>& transforms = componentLibrary.Register<TransformComponent>("wi::scene::Scene::transforms");
 		wi::ecs::ComponentManager<HierarchyComponent>& hierarchy = componentLibrary.Register<HierarchyComponent>("wi::scene::Scene::hierarchy");
-		wi::ecs::ComponentManager<MaterialComponent>& materials = componentLibrary.Register<MaterialComponent>("wi::scene::Scene::materials", 5); // version = 5
+		wi::ecs::ComponentManager<MaterialComponent>& materials = componentLibrary.Register<MaterialComponent>("wi::scene::Scene::materials", 6); // version = 6
 		wi::ecs::ComponentManager<MeshComponent>& meshes = componentLibrary.Register<MeshComponent>("wi::scene::Scene::meshes", 3); // version = 3
 		wi::ecs::ComponentManager<ImpostorComponent>& impostors = componentLibrary.Register<ImpostorComponent>("wi::scene::Scene::impostors");
 		wi::ecs::ComponentManager<ObjectComponent>& objects = componentLibrary.Register<ObjectComponent>("wi::scene::Scene::objects", 3); // version = 3
-		wi::ecs::ComponentManager<RigidBodyPhysicsComponent>& rigidbodies = componentLibrary.Register<RigidBodyPhysicsComponent>("wi::scene::Scene::rigidbodies", 3); // version = 3
+		wi::ecs::ComponentManager<RigidBodyPhysicsComponent>& rigidbodies = componentLibrary.Register<RigidBodyPhysicsComponent>("wi::scene::Scene::rigidbodies", 4); // version = 4
 		wi::ecs::ComponentManager<SoftBodyPhysicsComponent>& softbodies = componentLibrary.Register<SoftBodyPhysicsComponent>("wi::scene::Scene::softbodies", 3); // version = 3
 		wi::ecs::ComponentManager<ArmatureComponent>& armatures = componentLibrary.Register<ArmatureComponent>("wi::scene::Scene::armatures");
 		wi::ecs::ComponentManager<LightComponent>& lights = componentLibrary.Register<LightComponent>("wi::scene::Scene::lights", 2); // version = 2
@@ -61,6 +61,8 @@ namespace wi::scene
 		wi::ecs::ComponentManager<wi::Sprite>& sprites = componentLibrary.Register<wi::Sprite>("wi::scene::Scene::sprites");
 		wi::ecs::ComponentManager<wi::SpriteFont>& fonts = componentLibrary.Register<wi::SpriteFont>("wi::scene::Scene::fonts");
 		wi::ecs::ComponentManager<wi::VoxelGrid>& voxel_grids = componentLibrary.Register<wi::VoxelGrid>("wi::scene::Scene::voxel_grids");
+		wi::ecs::ComponentManager<MetadataComponent>& metadatas = componentLibrary.Register<MetadataComponent>("wi::scene::Scene::metadatas");
+		wi::ecs::ComponentManager<CharacterComponent>& characters = componentLibrary.Register<CharacterComponent>("wi::scene::Scene::characters");
 
 		// Non-serialized attributes:
 		float dt = 0;
@@ -84,6 +86,9 @@ namespace wi::scene
 		mutable bool acceleration_structure_update_requested = false;
 		void SetAccelerationStructureUpdateRequested(bool value = true) { acceleration_structure_update_requested = value; }
 		bool IsAccelerationStructureUpdateRequested() const { return acceleration_structure_update_requested; }
+		wi::Archive optimized_instatiation_data;
+		wi::jobsystem::context character_pathfinding_ctx;
+		wi::vector<wi::primitive::Capsule> character_capsules;
 
 		// AABB culling streams:
 		wi::vector<wi::primitive::AABB> aabb_objects;
@@ -304,6 +309,9 @@ namespace wi::scene
 		void ScanSpringDependencies();
 		void UpdateSpringsTopDownRecursive(SpringComponent* parent_spring, SpringComponent& spring);
 
+		float wetmap_fadeout_time = 0;
+		bool IsWetmapProcessingRequired() const;
+
 		// Update all components by a given timestep (in seconds):
 		//	This is an expensive function, prefer to call it only once per frame!
 		virtual void Update(float dt);
@@ -311,7 +319,10 @@ namespace wi::scene
 		virtual void Clear();
 		// Merge an other scene into this.
 		//	The contents of the other scene will be lost (and moved to this)!
+		//  Any references to entities or components from the other scene will now reference them in this scene.
 		virtual void Merge(Scene& other);
+		// Similar to merge but skipping some things that are safe to skip within the Update look
+		void MergeFastInternal(Scene& other);
 		// Create a copy of prefab and merge it into this.
 		//	prefab		: source scene to be copied from
 		//	attached	: if true, everything from prefab will be attached to a root entity
@@ -421,6 +432,13 @@ namespace wi::scene
 			uint32_t latitudeBands = 64,
 			uint32_t longitudeBands = 64
 		);
+		wi::ecs::Entity Entity_CreateMeshFromData(
+			const std::string& name,
+			size_t index_count,
+			const uint32_t* indices,
+			size_t vertex_count,
+			const XMFLOAT3* positions
+		);
 
 		// Attaches an entity to a parent:
 		//	child_already_in_local_space	:	child won't be transformed from world space to local space
@@ -455,6 +473,7 @@ namespace wi::scene
 		void RunScriptUpdateSystem(wi::jobsystem::context& ctx);
 		void RunSpriteUpdateSystem(wi::jobsystem::context& ctx);
 		void RunFontUpdateSystem(wi::jobsystem::context& ctx);
+		void RunCharacterUpdateSystem(wi::jobsystem::context& ctx);
 
 
 		struct RayIntersectionResult
@@ -549,6 +568,7 @@ namespace wi::scene
 		//	The result position is approximate because it involves reading back from GPU to the CPU, so the result can be delayed compared to the current GPU simulation.
 		//	Note that the input position to this function will be taken on the XZ plane and modified by the displacement map's XZ value, and the Y (vertical) position will be taken from the ocean water height and displacement map only.
 		XMFLOAT3 GetOceanPosAt(const XMFLOAT3& worldPosition) const;
+
 	};
 
 	// Returns skinned vertex position

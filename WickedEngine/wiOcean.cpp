@@ -9,6 +9,7 @@
 #include "wiVector.h"
 
 #include <algorithm>
+#include <mutex>
 
 using namespace wi::graphics;
 using namespace wi::scene;
@@ -187,6 +188,7 @@ namespace wi
 		SubresourceData initdata;
 		initdata.data_ptr = displacementdata.data();
 		initdata.row_pitch = tex_desc.width * sizeof(XMFLOAT4);
+		tex_desc.layout = ResourceState::COPY_SRC | ResourceState::SHADER_RESOURCE_COMPUTE;
 		device->CreateTexture(&tex_desc, &initdata, &displacementMap);
 		device->SetName(&displacementMap, "displacementMap");
 
@@ -204,40 +206,6 @@ namespace wi
 		cb_desc.bind_flags = BindFlag::CONSTANT_BUFFER;
 		cb_desc.size = sizeof(OceanCB);
 		device->CreateBuffer(&cb_desc, nullptr, &constantBuffer);
-
-		const uint2 dim = uint2(160 * params.surfaceDetail, 90 * params.surfaceDetail);
-
-		const uint index_count = (dim.x - 1) * (dim.y - 1) * 6;
-		const uint64_t indexbuffer_required_size = index_count * sizeof(uint32_t);
-		if (indexBuffer.GetDesc().size != indexbuffer_required_size)
-		{
-			wi::vector<uint32_t> index_data(index_count);
-			size_t counter = 0;
-			for (uint32_t x = 0; x < dim.x - 1; x++)
-			{
-				for (uint32_t y = 0; y < dim.y - 1; y++)
-				{
-					uint32_t lowerLeft = x + y * dim.x;
-					uint32_t lowerRight = (x + 1) + y * dim.x;
-					uint32_t topLeft = x + (y + 1) * dim.x;
-					uint32_t topRight = (x + 1) + (y + 1) * dim.x;
-
-					index_data[counter++] = topLeft;
-					index_data[counter++] = lowerLeft;
-					index_data[counter++] = lowerRight;
-
-					index_data[counter++] = topLeft;
-					index_data[counter++] = lowerRight;
-					index_data[counter++] = topRight;
-				}
-			}
-
-			GPUBufferDesc desc;
-			desc.bind_flags = BindFlag::INDEX_BUFFER;
-			desc.size = indexbuffer_required_size;
-			device->CreateBuffer(&desc, index_data.data(), &indexBuffer);
-			device->SetName(&indexBuffer, "Ocean::indexBuffer");
-		}
 	}
 
 	XMFLOAT3 Ocean::GetDisplacedPosition(const XMFLOAT3& worldPosition) const
@@ -357,7 +325,10 @@ namespace wi
 		cb.xOceanWaterColor = params.waterColor;
 		cb.xOceanExtinctionColor = XMFLOAT4(1 - params.extinctionColor.x, 1 - params.extinctionColor.y, 1 - params.extinctionColor.z, 1);
 		cb.xOceanTexelLength = params.patch_length / params.dmap_dim;
-		cb.xOceanScreenSpaceParams = XMFLOAT4((float)dim.x, (float)dim.y, 1.0f / (float)dim.x, 1.0f / (float)dim.y);
+		cb.xOceanScreenSpaceParams.x = (float)dim.x;
+		cb.xOceanScreenSpaceParams.y = (float)dim.y;
+		cb.xOceanScreenSpaceParams.z = 1.0f / cb.xOceanScreenSpaceParams.x;
+		cb.xOceanScreenSpaceParams.w = 1.0f / cb.xOceanScreenSpaceParams.y;
 		cb.xOceanPatchSizeRecip = 1.0f / params.patch_length;
 		cb.xOceanMapHalfTexel = 0.5f / params.dmap_dim;
 		cb.xOceanWaterHeight = params.waterHeight;
@@ -429,16 +400,18 @@ namespace wi
 
 		wi::renderer::GenerateMipChain(gradientMap, wi::renderer::MIPGENFILTER_LINEAR, cmd);
 
-		// Copy displacement map to readback:
-		device->Barrier(GPUBarrier::Image(&displacementMap, displacementMap.desc.layout, ResourceState::COPY_SRC), cmd);
-		device->CopyResource(&displacementMap_readback[displacement_readback_index], &displacementMap, cmd);
-		displacement_readback_valid[displacement_readback_index] = true;
-		displacement_readback_index = (displacement_readback_index + 1) % device->GetBufferCount();
-		device->Barrier(GPUBarrier::Image(&displacementMap, ResourceState::COPY_SRC, displacementMap.desc.layout), cmd);
-
 		device->EventEnd(cmd);
 	}
 
+	void Ocean::CopyDisplacementMapReadback(wi::graphics::CommandList cmd) const
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+		device->EventBegin("Ocean Readback Copy", cmd);
+		device->CopyResource(&displacementMap_readback[displacement_readback_index], &displacementMap, cmd);
+		displacement_readback_valid[displacement_readback_index] = true;
+		displacement_readback_index = (displacement_readback_index + 1) % device->GetBufferCount();
+		device->EventEnd(cmd);
+	}
 
 	void Ocean::Render(const CameraComponent& camera, CommandList cmd) const
 	{
@@ -457,6 +430,42 @@ namespace wi
 			device->BindPipelineState(&PSO, cmd);
 		}
 
+		const uint2 dim = uint2(160 * params.surfaceDetail, 90 * params.surfaceDetail);
+		const uint index_count = dim.x * dim.y * 6;
+		const uint64_t indexbuffer_required_size = index_count * sizeof(uint32_t);
+		static std::mutex locker;
+		locker.lock(); // in case two threads draw the ocean the same time, index buffer creation must be locked
+		if (indexBuffer.GetDesc().size != indexbuffer_required_size)
+		{
+			wi::vector<uint32_t> index_data(index_count);
+			size_t counter = 0;
+			for (uint32_t x = 0; x < dim.x - 1; x++)
+			{
+				for (uint32_t y = 0; y < dim.y - 1; y++)
+				{
+					uint32_t lowerLeft = x + y * dim.x;
+					uint32_t lowerRight = (x + 1) + y * dim.x;
+					uint32_t topLeft = x + (y + 1) * dim.x;
+					uint32_t topRight = (x + 1) + (y + 1) * dim.x;
+
+					index_data[counter++] = topLeft;
+					index_data[counter++] = lowerLeft;
+					index_data[counter++] = lowerRight;
+
+					index_data[counter++] = topLeft;
+					index_data[counter++] = lowerRight;
+					index_data[counter++] = topRight;
+				}
+			}
+
+			GPUBufferDesc desc;
+			desc.bind_flags = BindFlag::INDEX_BUFFER;
+			desc.size = indexbuffer_required_size;
+			device->CreateBuffer(&desc, index_data.data(), &indexBuffer);
+			device->SetName(&indexBuffer, "Ocean::indexBuffer");
+		}
+		locker.unlock();
+
 		device->BindConstantBuffer(&constantBuffer, CB_GETBINDSLOT(OceanCB), cmd);
 
 		device->BindResource(&displacementMap, 0, cmd);
@@ -464,7 +473,7 @@ namespace wi
 
 		device->BindIndexBuffer(&indexBuffer, IndexBufferFormat::UINT32, 0, cmd);
 
-		device->DrawIndexed(uint32_t(indexBuffer.desc.size / sizeof(uint32_t)), 0, 0, cmd);
+		device->DrawIndexed(index_count, 0, 0, cmd);
 
 		device->EventEnd(cmd);
 	}

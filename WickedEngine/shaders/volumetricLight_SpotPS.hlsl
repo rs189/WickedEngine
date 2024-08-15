@@ -1,5 +1,5 @@
-#define DISABLE_SOFT_SHADOWMAP
 #define TRANSPARENT_SHADOWMAP_SECONDARY_DEPTH_CHECK // fix the lack of depth testing
+#define DISABLE_SOFT_SHADOWMAP
 #include "volumetricLightHF.hlsli"
 #include "fogHF.hlsli"
 #include "oceanSurfaceHF.hlsli"
@@ -38,7 +38,7 @@ bool intersectInfiniteCone(float3 p, float3 v, float3 pa, float3 va, float sina2
 
 float4 main(VertexToPixel input) : SV_TARGET
 {
-	ShaderEntity light = load_entity(GetFrame().lightarray_offset + (uint)g_xColor.x);
+	ShaderEntity light = load_entity(spotlights().first_item() + (uint)g_xColor.x);
 
 	float2 ScreenCoord = input.pos2D.xy / input.pos2D.w * float2(0.5f, -0.5f) + 0.5f;
 	float4 depths = texture_depth.GatherRed(sampler_point_clamp, ScreenCoord);
@@ -101,7 +101,7 @@ float4 main(VertexToPixel input) : SV_TARGET
 		{
 			const float range = light.GetRange();
 			const float range2 = range * range;
-			float3 attenuation = attenuation_spotlight(dist, dist2, range, range2, spot_factor, light.GetAngleScale(), light.GetAngleOffset());
+			float3 attenuation = attenuation_spotlight(dist2, range, range2, spot_factor, light.GetAngleScale(), light.GetAngleOffset());
 
 			[branch]
 			if (light.IsCastingShadow())
@@ -112,7 +112,7 @@ float4 main(VertexToPixel input) : SV_TARGET
 				[branch]
 				if ((saturate(shadow_uv.x) == shadow_uv.x) && (saturate(shadow_uv.y) == shadow_uv.y))
 				{
-					attenuation *= shadow_2D(light, shadow_pos.xyz, shadow_uv.xy, 0);
+					attenuation *= shadow_2D(light, shadow_pos.xyz, shadow_uv.xy, 0, input.pos.xy);
 				}
 			}
 

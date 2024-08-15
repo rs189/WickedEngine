@@ -33,6 +33,9 @@ namespace wi::scene
 
 		wi::jobsystem::context ctx;
 
+		wi::jobsystem::Wait(character_pathfinding_ctx);
+		character_pathfinding_ctx.priority = wi::jobsystem::Priority::Low;
+
 		// Script system runs first, because it could create new entities and components
 		//	So GPU persistent resources need to be created accordingly for them too:
 		RunScriptUpdateSystem(ctx);
@@ -230,6 +233,8 @@ namespace wi::scene
 				}
 			});
 		}
+
+		RunCharacterUpdateSystem(ctx);
 
 		RunAnimationUpdateSystem(ctx);
 
@@ -1036,6 +1041,7 @@ namespace wi::scene
 
 		surfelgi = {};
 		ddgi = {};
+		ocean = {};
 
 		aabb_objects.clear();
 		aabb_lights.clear();
@@ -1048,12 +1054,16 @@ namespace wi::scene
 		collider_count_cpu = 0;
 		collider_count_gpu = 0;
 	}
-	void Scene::Merge(Scene& other)
+	void Scene::MergeFastInternal(Scene& other)
 	{
 		for (auto& entry : componentLibrary.entries)
 		{
 			entry.second.component_manager->Merge(*other.componentLibrary.entries[entry.first].component_manager);
 		}
+	}
+	void Scene::Merge(Scene& other)
+	{
+		MergeFastInternal(other);
 
 		bounds = AABB::Merge(bounds, other.bounds);
 
@@ -1166,8 +1176,17 @@ namespace wi::scene
 		wi::Archive archive;
 		EntitySerializer seri;
 
-		archive.SetReadModeAndResetPos(false);
-		prefab.componentLibrary.Serialize(archive, seri);
+		if (!prefab.optimized_instatiation_data.IsReadMode())
+		{
+			// Create optimized data
+			prefab.locker.lock();
+			prefab.optimized_instatiation_data.SetReadModeAndResetPos(false);
+			prefab.componentLibrary.Serialize(prefab.optimized_instatiation_data, seri);
+			prefab.optimized_instatiation_data.SetReadModeAndResetPos(true);
+			prefab.locker.unlock();
+		}
+
+		archive = wi::Archive(prefab.optimized_instatiation_data.GetData(), prefab.optimized_instatiation_data.GetSize());
 
 		archive.SetReadModeAndResetPos(true);
 		tmp.componentLibrary.Serialize(archive, seri);
@@ -1190,6 +1209,8 @@ namespace wi::scene
 					tmp.Component_Attach(entity, rootEntity);
 				}
 			}
+
+			tmp.RunHierarchyUpdateSystem(seri.ctx);
 		}
 
 		wi::jobsystem::Wait(seri.ctx); // wait for completion of component serializations background threads here
@@ -1807,6 +1828,49 @@ namespace wi::scene
 
 		return entity;
 	}
+	Entity Scene::Entity_CreateMeshFromData(
+		const std::string& name,
+		size_t index_count,
+		const uint32_t* indices,
+		size_t vertex_count,
+		const XMFLOAT3* positions
+	)
+	{
+		Entity entity = CreateEntity();
+
+		if (!name.empty())
+		{
+			names.Create(entity) = name;
+		}
+
+		layers.Create(entity);
+
+		transforms.Create(entity);
+
+		ObjectComponent& object = objects.Create(entity);
+
+		MeshComponent& mesh = meshes.Create(entity);
+
+		// object references the mesh entity (there can be multiple objects referencing one mesh):
+		object.meshID = entity;
+
+		mesh.indices.resize(index_count);
+		std::memcpy(mesh.indices.data(), indices, sizeof(uint32_t) * index_count);
+
+		mesh.vertex_positions.resize(vertex_count);
+		std::memcpy(mesh.vertex_positions.data(), positions, sizeof(XMFLOAT3) * vertex_count);
+
+		// Subset maps a part of the mesh to a material:
+		MeshComponent::MeshSubset& subset = mesh.subsets.emplace_back();
+		subset.indexCount = uint32_t(mesh.indices.size());
+		materials.Create(entity);
+		subset.materialID = entity; // the material component is created on the same entity as the mesh component, though it is not required as it could also use a different material entity
+
+		// vertex buffer GPU data will be packed and uploaded here:
+		mesh.ComputeNormals(MeshComponent::COMPUTE_NORMALS_HARD);
+
+		return entity;
+	}
 
 	void Scene::Component_Attach(Entity entity, Entity parent, bool child_already_in_local_space)
 	{
@@ -1882,6 +1946,8 @@ namespace wi::scene
 			for (size_t animation_index = 0; animation_index < animation_queue.animations.size(); ++animation_index)
 			{
 				AnimationComponent& animation = *animation_queue.animations[animation_index];
+				if (!animation.IsPlaying())
+					continue;
 				animation.last_update_time = animation.timer;
 
 				for (const AnimationComponent::AnimationChannel& channel : animation.channels)
@@ -2680,12 +2746,46 @@ namespace wi::scene
 
 				}
 
-				if (animation.IsLooped() && animation.timer > animation.end)
+				if (animation.timer > animation.end && animation.speed > 0)
 				{
-					animation.timer = animation.start;
-					for (auto& channel : animation.channels)
+					if (animation.IsLooped())
 					{
-						channel.next_event = 0;
+						animation.timer = animation.start;
+						for (auto& channel : animation.channels)
+						{
+							channel.next_event = 0;
+						}
+					}
+					else if (animation.IsPingPong())
+					{
+						animation.timer = animation.end;
+						animation.speed = -animation.speed;
+					}
+					else
+					{
+						animation.timer = animation.end;
+						animation.Pause();
+					}
+				}
+				else if (animation.timer < animation.start && animation.speed < 0)
+				{
+					if (animation.IsLooped())
+					{
+						animation.timer = animation.end;
+						for (auto& channel : animation.channels)
+						{
+							channel.next_event = 0;
+						}
+					}
+					else if (animation.IsPingPong())
+					{
+						animation.timer = animation.start;
+						animation.speed = -animation.speed;
+					}
+					else
+					{
+						animation.timer = animation.start;
+						animation.Pause();
 					}
 				}
 
@@ -3076,6 +3176,145 @@ namespace wi::scene
 
 		auto range = wi::profiler::BeginRangeCPU("Procedural Animations");
 
+		// Character IK foot placement, should be after animations and hierarchy update:
+		for (size_t i = 0; i < characters.GetCount(); ++i)
+		{
+			CharacterComponent& character = characters[i];
+			if (character.left_foot != INVALID_ENTITY && character.right_foot != INVALID_ENTITY)
+				continue;
+			HumanoidComponent* humanoid = humanoids.GetComponent(character.humanoidEntity);
+			if (humanoid == nullptr)
+				continue;
+			character.left_foot = humanoid->bones[size_t(HumanoidComponent::HumanoidBone::LeftFoot)];
+			{
+				InverseKinematicsComponent& ik = inverse_kinematics.Create(character.left_foot);
+				ik.use_target_position = true;
+				ik.chain_length = 2;
+				ik.iteration_count = 10;
+			}
+			character.right_foot = humanoid->bones[size_t(HumanoidComponent::HumanoidBone::RightFoot)];
+			{
+				InverseKinematicsComponent& ik = inverse_kinematics.Create(character.right_foot);
+				ik.use_target_position = true;
+				ik.chain_length = 2;
+				ik.iteration_count = 10;
+			}
+		}
+		wi::jobsystem::Dispatch(ctx, (uint32_t)characters.GetCount(), 1, [&](wi::jobsystem::JobArgs args) {
+			CharacterComponent& character = characters[args.jobIndex];
+			if (character.left_foot == INVALID_ENTITY || character.right_foot == INVALID_ENTITY)
+				return;
+			if (character.humanoidEntity == INVALID_ENTITY)
+				return;
+			HumanoidComponent* humanoid = humanoids.GetComponent(character.humanoidEntity);
+			if (humanoid == nullptr)
+				return;
+
+			Entity entity = characters.GetEntity(args.jobIndex);
+			uint32_t layer = 0;
+			LayerComponent* layercomponent = layers.GetComponent(entity);
+			if (layercomponent != nullptr)
+			{
+				layer = layercomponent->GetLayerMask();
+			}
+
+			float base_y = character.position.y;
+			Entity ik_foot = INVALID_ENTITY;
+			XMFLOAT3 ik_pos = XMFLOAT3(0, 0, 0);
+			XMFLOAT3 left_pos = XMFLOAT3(0, 0, 0);
+			XMFLOAT3 right_pos = XMFLOAT3(0, 0, 0);
+			TransformComponent* left_transform = transforms.GetComponent(character.left_foot);
+			TransformComponent* right_transform = transforms.GetComponent(character.right_foot);
+			if (left_transform != nullptr && right_transform != nullptr)
+			{
+				left_pos = left_transform->GetPosition();
+				right_pos = right_transform->GetPosition();
+			}
+
+			if (character.IsFootPlacementEnabled() && character.ground_intersect)
+			{
+				// Compute root offset :
+				// I determine which foot wants to step on lower ground, that will offset whole root downwards
+				// 	The other foot will be the upper foot which will be later attached an Inverse Kinematics(IK) effector
+				Ray left_ray(XMFLOAT3(left_pos.x, left_pos.y + 0.5f, left_pos.z), XMFLOAT3(0, -1, 0), 0, 1);
+				Ray right_ray(XMFLOAT3(right_pos.x, right_pos.y + 0.5f, right_pos.z), XMFLOAT3(0, -1, 0), 0, 1);
+				RayIntersectionResult left_result = Intersects(left_ray, FILTER_NAVIGATION_MESH | FILTER_COLLIDER, ~layer);
+				RayIntersectionResult right_result = Intersects(right_ray, FILTER_NAVIGATION_MESH | FILTER_COLLIDER, ~layer);
+				float left_diff = 0;
+				float right_diff = 0;
+				if (left_result.entity != INVALID_ENTITY)
+				{
+					left_diff = left_result.position.y - base_y;
+				}
+				if (right_result.entity != INVALID_ENTITY)
+				{
+					right_diff = right_result.position.y - base_y;
+				}
+				float diff = left_diff;
+				if (left_result.position.y > right_result.position.y + 0.01f)
+				{
+					diff = right_diff;
+					if (left_result.entity != INVALID_ENTITY)
+					{
+						ik_foot = character.left_foot;
+						ik_pos = left_result.position;
+					}
+				}
+				else
+				{
+					if (right_result.entity != INVALID_ENTITY)
+					{
+						ik_foot = character.right_foot;
+						ik_pos = right_result.position;
+					}
+				}
+				character.root_offset = wi::math::Lerp(character.root_offset, diff, 0.1f);
+			}
+			else
+			{
+				character.root_offset = wi::math::Lerp(character.root_offset, 0.0f, 0.1f);
+			}
+
+			TransformComponent* humanoid_transform = transforms.GetComponent(character.humanoidEntity);
+			if (humanoid_transform != nullptr)
+			{
+				// Offset root transform to lower foot pos:
+				humanoid_transform->translation_local.y = character.root_offset;
+				humanoid_transform->SetDirty();
+			}
+
+			// Ease out inverse kinematics by default:
+			if (inverse_kinematics.Contains(character.left_foot))
+			{
+				InverseKinematicsComponent& ik = *inverse_kinematics.GetComponent(character.left_foot);
+				ik.target_position = wi::math::Lerp(ik.target_position, left_pos, 0.6f);
+			}
+			if (inverse_kinematics.Contains(character.right_foot))
+			{
+				InverseKinematicsComponent& ik = *inverse_kinematics.GetComponent(character.right_foot);
+				ik.target_position = wi::math::Lerp(ik.target_position, right_pos, 0.6f);
+			}
+
+			// The upper foot will use IK:
+			if (ik_foot != INVALID_ENTITY && inverse_kinematics.Contains(ik_foot))
+			{
+				InverseKinematicsComponent& ik = *inverse_kinematics.GetComponent(ik_foot);
+				ik_pos.y += 0.16f;
+				ik.target_position = wi::math::Lerp(ik.target_position, ik_pos, 0.6f);
+#if 0
+				// Debug draw foot target:
+				locker.lock();
+				wi::renderer::RenderablePoint point;
+				point.position = ik.target_position;
+				point.color = XMFLOAT4(1, 1, 0, 1);
+				point.size = 0.1f;
+				wi::renderer::DrawPoint(point);
+				locker.unlock();
+#endif
+			}
+		});
+		wi::jobsystem::Wait(ctx);
+
 		if (inverse_kinematics.GetCount() > 0 || humanoids.GetCount() > 0)
 		{
 			transforms_temp = transforms.GetComponentArray(); // make copy
@@ -3091,16 +3330,29 @@ namespace wi::scene
 			}
 			Entity entity = inverse_kinematics.GetEntity(i);
 			size_t transform_index = transforms.GetIndex(entity);
-			size_t target_index = transforms.GetIndex(ik.target);
 			const HierarchyComponent* hier = hierarchy.GetComponent(entity);
-			if (transform_index == ~0ull || target_index == ~0ull || hier == nullptr)
+			if (transform_index == ~0ull || hier == nullptr)
 			{
 				continue;
 			}
 			TransformComponent& transform = transforms_temp[transform_index];
-			TransformComponent& target = transforms_temp[target_index];
 
-			const XMVECTOR target_pos = target.GetPositionV();
+			XMVECTOR target_pos;
+			if (ik.use_target_position)
+			{
+				target_pos = XMLoadFloat3(&ik.target_position);
+			}
+			else
+			{
+				size_t target_index = transforms.GetIndex(ik.target);
+				if (target_index == ~0ull)
+				{
+					continue;
+				}
+				TransformComponent& target = transforms_temp[target_index];
+				target_pos = target.GetPositionV();
+			}
+
 			for (uint32_t iteration = 0; iteration < ik.iteration_count; ++iteration)
 			{
 				TransformComponent* stack[32] = {};
@@ -3129,8 +3381,6 @@ namespace wi::scene
 					for (size_t humanoid_idx = 0; (humanoid_idx < humanoids.GetCount()) && !constrain; ++humanoid_idx)
 					{
 						const HumanoidComponent& humanoid = humanoids[humanoid_idx];
-						Entity humanoidEntity = humanoids.GetEntity(humanoid_idx);
-						const float facing = GetHumanoidDefaultFacing(humanoid, humanoidEntity);
 						int bone_type_idx = 0;
 						for (auto& bone : humanoid.bones)
 						{
@@ -3153,25 +3403,6 @@ namespace wi::scene
 									constraint_max = XMFLOAT3(XM_PI * 0.8f, 0, 0);
 									break;
 								}
-							}
-							if (constrain)
-							{
-								// Constraint swapping fixes for flipped model orientations:
-								if (facing < 0)
-								{
-									// Note: this is a fix for VRM 1.0 and Mixamo model
-									std::swap(constraint_min, constraint_max);
-								}
-								const TransformComponent* bone_transform = transforms.GetComponent(bone);
-								if (bone_transform != nullptr)
-								{
-									if (bone_transform->GetForward().z < 0)
-									{
-										// Note: this is a fix for FBX Mixamo models
-										std::swap(constraint_min, constraint_max);
-									}
-								}
-								break;
 							}
 							bone_type_idx++;
 						}
@@ -4055,7 +4286,7 @@ namespace wi::scene
 					desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
 					device->CreateBuffer(&desc, nullptr, &object.wetmap);
 					device->SetName(&object.wetmap, "wetmap");
-					object.wetmapIterationCount = 0;
+					object.wetmap_cleared = false;
 				}
 				else if(!object.IsWetmapEnabled() && object.wetmap.IsValid())
 				{
@@ -4157,7 +4388,7 @@ namespace wi::scene
 
 					if (material != nullptr)
 					{
-						object.filterMask |= material->GetFilterMask();
+						object.filterMaskDynamic |= material->GetFilterMask();
 
 						if (material->HasPlanarReflection())
 						{
@@ -4179,10 +4410,10 @@ namespace wi::scene
 
 				object.sort_bits = sort_bits.value;
 
-				// Correction matrix for mesh normals with non-uniform object scaling:
-				XMMATRIX worldMatrixInverseTranspose = XMMatrixTranspose(XMMatrixInverse(nullptr, W));
-				XMFLOAT4X4 transformIT;
-				XMStoreFloat4x4(&transformIT, worldMatrixInverseTranspose);
+				//// Correction matrix for mesh normals with non-uniform object scaling:
+				//XMMATRIX worldMatrixInverseTranspose = XMMatrixTranspose(XMMatrixInverse(nullptr, W));
+				//XMFLOAT4X4 transformIT;
+				//XMStoreFloat4x4(&transformIT, worldMatrixInverseTranspose);
 
 				// Create GPU instance data:
 				ShaderMeshInstance inst;
@@ -4202,7 +4433,11 @@ namespace wi::scene
 				inst.transform.Create(worldMatrix);
 				inst.transformPrev.Create(worldMatrixPrev);
 
-				inst.transformInverseTranspose.Create(transformIT);
+				// Get the quaternion from W because that reflects changes by other components (eg. softbody)
+				XMVECTOR S, R, T;
+				XMMatrixDecompose(&S, &R, &T, W);
+				XMStoreFloat4(&inst.quaternion, R);
+
 				if (object.lightmap.IsValid())
 				{
 					inst.lightmap = device->GetDescriptorIndex(&object.lightmap, SubresourceType::SRV);
@@ -4210,7 +4445,7 @@ namespace wi::scene
 				inst.uid = entity;
 				inst.layerMask = layerMask;
 				inst.color = wi::math::CompressColor(object.color);
-				inst.emissive = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(object.emissiveColor.x * object.emissiveColor.w, object.emissiveColor.y * object.emissiveColor.w, object.emissiveColor.z * object.emissiveColor.w));
+				inst.emissive = wi::math::pack_half3(XMFLOAT3(object.emissiveColor.x * object.emissiveColor.w, object.emissiveColor.y * object.emissiveColor.w, object.emissiveColor.z * object.emissiveColor.w));
 				inst.baseGeometryOffset = mesh.geometryOffset;
 				inst.baseGeometryCount = (uint)mesh.subsets.size();
 				inst.geometryOffset = inst.baseGeometryOffset + first_subset;
@@ -4606,7 +4841,7 @@ namespace wi::scene
 			inst.init();
 			inst.uid = entity;
 			inst.layerMask = hair.layerMask;
-			inst.emissive = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(1, 1, 1));
+			inst.emissive = wi::math::pack_half3(XMFLOAT3(1, 1, 1));
 			inst.color = wi::math::CompressColor(XMFLOAT4(1, 1, 1, 1));
 			inst.center = hair.aabb.getCenter();
 			inst.radius = hair.aabb.getRadius();
@@ -4615,6 +4850,7 @@ namespace wi::scene
 			inst.baseGeometryOffset = inst.geometryOffset;
 			inst.baseGeometryCount = inst.geometryCount;
 			inst.meshletOffset = meshletOffset;
+			inst.vb_wetmap = hair.wetmap.descriptor_srv;
 
 			XMFLOAT4X4 remapMatrix;
 			XMStoreFloat4x4(&remapMatrix, hair.aabb.getUnormRemapMatrix());
@@ -4686,6 +4922,8 @@ namespace wi::scene
 
 			const TransformComponent& transform = *transforms.GetComponent(entity);
 			emitter.UpdateCPU(transform, dt);
+			if (emitter.IsInactive()) // check after UpdateCPU
+				return; // can skip writing TLAS instace below
 
 			GraphicsDevice* device = wi::graphics::GetDevice();
 
@@ -4708,7 +4946,7 @@ namespace wi::scene
 			inst.init();
 			inst.uid = entity;
 			inst.layerMask = emitter.layerMask;
-			inst.emissive = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(1, 1, 1));
+			inst.emissive = wi::math::pack_half3(XMFLOAT3(1, 1, 1));
 			inst.color = wi::math::CompressColor(XMFLOAT4(1, 1, 1, 1));
 			inst.geometryOffset = (uint)geometryAllocation;
 			inst.geometryCount = 1;
@@ -4756,6 +4994,10 @@ namespace wi::scene
 			if (weather.IsOceanEnabled() && !ocean.IsValid())
 			{
 				OceanRegenerate();
+			}
+			if (!weather.IsOceanEnabled())
+			{
+				ocean = {};
 			}
 
 			// Ocean occlusion status:
@@ -4816,7 +5058,7 @@ namespace wi::scene
 			{
 				Texture gradientTex = wi::texturehelper::CreateGradientTexture(
 					wi::texturehelper::GradientType::Circular,
-					32, 32,
+					64, 64,
 					XMFLOAT2(0.5f, 0.5f), XMFLOAT2(0.5f, 0),
 					wi::texturehelper::GradientFlags::Smoothstep | wi::texturehelper::GradientFlags::Inverse
 				);
@@ -4829,7 +5071,21 @@ namespace wi::scene
 				wi::renderer::AddDeferredBlockCompression(gradientTex, gradientTexBC);
 				rainMaterial.textures[MaterialComponent::BASECOLORMAP].resource.SetTexture(gradientTexBC);
 			}
-			rainMaterial.shadingRate = ShadingRate::RATE_4X4;
+			if (!rainMaterial.textures[MaterialComponent::NORMALMAP].resource.IsValid())
+			{
+				Texture gradientTex = wi::texturehelper::CreateLensDistortionNormalMap(
+					32, 32
+				);
+				Texture gradientTexBC;
+				TextureDesc desc = gradientTex.GetDesc();
+				desc.format = Format::BC5_UNORM;
+				desc.swizzle = { wi::graphics::ComponentSwizzle::R,wi::graphics::ComponentSwizzle::G,wi::graphics::ComponentSwizzle::ONE,wi::graphics::ComponentSwizzle::ONE };
+				bool success = device->CreateTexture(&desc, nullptr, &gradientTexBC);
+				assert(success);
+				wi::renderer::AddDeferredBlockCompression(gradientTex, gradientTexBC);
+				rainMaterial.textures[MaterialComponent::NORMALMAP].resource.SetTexture(gradientTexBC);
+			}
+			//rainMaterial.shadingRate = ShadingRate::RATE_4X4;
 			TransformComponent transform;
 			transform.scale_local = XMFLOAT3(30, 30, 30);
 			transform.translation_local.x = camera.Eye.x + camera.At.x * 10;
@@ -4862,7 +5118,7 @@ namespace wi::scene
 			inst.init();
 			inst.uid = 0;
 			inst.layerMask = ~0u;
-			inst.emissive = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(1, 1, 1));
+			inst.emissive = wi::math::pack_half3(XMFLOAT3(1, 1, 1));
 			inst.color = wi::math::CompressColor(XMFLOAT4(1, 1, 1, 1));
 			inst.geometryOffset = (uint)rainGeometryOffset;
 			inst.geometryCount = 1;
@@ -4902,6 +5158,12 @@ namespace wi::scene
 		{
 			rainMaterial = {};
 			rainEmitter = {};
+		}
+
+		wetmap_fadeout_time -= dt;
+		if (weather.IsOceanEnabled() || weather.rain_amount > 0)
+		{
+			wetmap_fadeout_time = 60; // allow 60 sec for remaining wetmaps to fade out
 		}
 	}
 	void Scene::RunSoundUpdateSystem(wi::jobsystem::context& ctx)
@@ -5042,6 +5304,302 @@ namespace wi::scene
 			}
 			font.Update(dt);
 		});
+	}
+	void Scene::RunCharacterUpdateSystem(wi::jobsystem::context& ctx)
+	{
+		static const XMVECTOR up = XMVectorSet(0, 1, 0, 0);
+		static const XMMATRIX rotY = XMMatrixRotationY(XM_PI);
+		static const int max_substeps = 4;
+
+		character_capsules.resize(characters.GetCount());
+		for (size_t i = 0; i < characters.GetCount(); ++i)
+		{
+			const HumanoidComponent* humanoid = humanoids.GetComponent(characters[i].humanoidEntity);
+			if (humanoid != nullptr && humanoid->IsRagdollPhysicsEnabled())
+			{
+				characters[i].SetActive(false);
+				continue;
+			}
+			character_capsules[i] = characters[i].GetCapsule();
+		}
+
+		wi::jobsystem::Dispatch(ctx, (uint32_t)characters.GetCount(), 1, [&](wi::jobsystem::JobArgs args) {
+			CharacterComponent& character = characters[args.jobIndex];
+			if (!character.IsActive())
+				return;
+			Entity entity = characters.GetEntity(args.jobIndex);
+			uint32_t layer = 0;
+			LayerComponent* layercomponent = layers.GetComponent(entity);
+			if (layercomponent != nullptr)
+			{
+				layer = layercomponent->GetLayerMask();
+			}
+
+			const float fixed_update_fps = character.fixed_update_fps;
+			const float timestep = 1.0f / fixed_update_fps;
+			const float ground_friction = character.ground_friction;
+			const float water_friction = character.water_friction;
+			const float slope_threshold = character.slope_threshold;
+			const float leaning_limit = character.leaning_limit;
+			const XMVECTOR gravity = XMVectorSet(0, character.gravity * timestep, 0, 0);
+
+			if (character.humanoidEntity == INVALID_ENTITY)
+			{
+				// Search for humanoid entity that is either this entity or a child:
+				if (humanoids.Contains(entity))
+				{
+					character.humanoidEntity = entity;
+				}
+				else
+				{
+					for (size_t i = 0; i < humanoids.GetCount(); ++i)
+					{
+						Entity humanoidEntity = humanoids.GetEntity(i);
+						if (Entity_IsDescendant(humanoidEntity, entity))
+						{
+							character.humanoidEntity = humanoidEntity;
+						}
+					}
+				}
+			}
+			const HumanoidComponent* humanoid = humanoids.GetComponent(character.humanoidEntity);
+			if (humanoid != nullptr && humanoid->IsRagdollPhysicsEnabled())
+				return;
+
+			XMVECTOR velocity = XMLoadFloat3(&character.velocity);
+			XMVECTOR movement = XMLoadFloat3(&character.movement);
+			XMVECTOR position = XMLoadFloat3(&character.position);
+			XMVECTOR height = XMVectorSet(0, character.height, 0, 0);
+			XMVECTOR platform_velocity_accumulation = XMVectorZero();
+			float platform_velocity_count = 0;
+
+			XMMATRIX facing_rot = XMMatrixLookToLH(XMVectorZero(), XMLoadFloat3(&character.facing), up);
+			
+			// Swimming:
+			character.swimming = false;
+			float swim_offset = 0;
+			if (humanoid != nullptr && humanoid->bones[size_t(HumanoidComponent::HumanoidBone::Neck)] != INVALID_ENTITY)
+			{
+				Entity neck_entity = humanoid->bones[size_t(HumanoidComponent::HumanoidBone::Neck)];
+				TransformComponent* neck_transform = transforms.GetComponent(neck_entity);
+				if (neck_transform != nullptr)
+				{
+					XMFLOAT3 neck_pos = neck_transform->GetPosition();
+					neck_pos.y += character.water_vertical_offset;
+					XMFLOAT3 ocean_pos = GetOceanPosAt(neck_pos);
+					float water_distance = ocean_pos.y - neck_pos.y;
+					if (water_distance > 0)
+					{
+						// Ocean is above the neck:
+						character.swimming = true;
+						swim_offset = water_distance;
+					}
+					else
+					{
+						Ray ray(neck_pos, XMFLOAT3(0, 1, 0), 0, 100);
+						RayIntersectionResult result = Intersects(ray, FILTER_WATER);
+						if (result.entity != INVALID_ENTITY)
+						{
+							character.swimming = true;
+							swim_offset = result.distance;
+						}
+					}
+				}
+			}
+
+			character.accumulator += dt;
+
+			const bool timestep_occurred = character.accumulator >= timestep;
+			if (timestep_occurred)
+			{
+				character.ground_intersect = false;
+			}
+
+			// Fixed timestep logic:
+			int steps = 0;
+			while (character.accumulator >= timestep && steps <= max_substeps)
+			{
+				steps++;
+				XMStoreFloat3(&character.position_prev, position);
+				character.accumulator -= timestep;
+				if (character.swimming)
+				{
+					velocity *= water_friction;
+				}
+				if (character.velocity.y > character.gravity && !character.swimming)
+				{
+					velocity += gravity;
+				}
+				velocity += movement;
+
+				position += velocity * timestep;
+
+				// Check ground:
+				Capsule capsule = Capsule(position, position + height, character.width);
+				CapsuleIntersectionResult result = Intersects(capsule, FILTER_NAVIGATION_MESH | FILTER_COLLIDER, ~layer);
+				if (result.entity != INVALID_ENTITY)
+				{
+					XMVECTOR collisionNormal = XMLoadFloat3(&result.normal);
+					const float slope = XMVectorGetX(XMVector3Dot(collisionNormal, up));
+					if (slope > slope_threshold)
+					{
+						character.ground_intersect = true;
+						velocity *= ground_friction;
+						position += XMVectorSet(0, result.depth, 0, 0);
+						platform_velocity_accumulation += XMLoadFloat3(&result.velocity);
+						platform_velocity_count += 1.0f;
+					}
+				}
+
+				// Check wall:
+				capsule = Capsule(position, position + height, character.width);
+				result = Intersects(capsule, FILTER_NAVIGATION_MESH | FILTER_COLLIDER, ~layer);
+				if (result.entity != INVALID_ENTITY)
+				{
+					XMVECTOR collisionNormal = XMLoadFloat3(&result.normal);
+					const float slope = XMVectorGetX(XMVector3Dot(collisionNormal, up));
+					if (slope <= slope_threshold)
+					{
+						float velocityLen = XMVectorGetX(XMVector3Length(velocity));
+						XMVECTOR velocityNormalized = XMVector3Normalize(velocity);
+						XMVECTOR undesiredMotion = collisionNormal * XMVector3Dot(velocityNormalized, collisionNormal);
+						XMVECTOR desiredMotion = velocityNormalized - undesiredMotion;
+						velocity = desiredMotion * velocityLen;
+						position += collisionNormal * result.depth;
+					}
+				}
+
+				// Check character capsules:
+				if (!character.IsCharacterToCharacterCollisionDisabled())
+				{
+					capsule = Capsule(position, position + height, character.width);
+					XMFLOAT3 incident_position = XMFLOAT3(0, 0, 0);
+					XMFLOAT3 incident_normal = XMFLOAT3(0, 0, 0);
+					float penetration_depth = 0;
+					for (size_t i = 0; i < character_capsules.size(); ++i)
+					{
+						if (i == args.jobIndex)
+							continue;
+						if (!characters[i].IsActive())
+							continue;
+						if (characters[i].IsCharacterToCharacterCollisionDisabled())
+							continue;
+						if (capsule.intersects(character_capsules[i], incident_position, incident_normal, penetration_depth))
+						{
+							XMVECTOR collisionNormal = XMLoadFloat3(&incident_normal);
+							float velocityLen = XMVectorGetX(XMVector3Length(velocity));
+							XMVECTOR velocityNormalized = XMVector3Normalize(velocity);
+							XMVECTOR undesiredMotion = collisionNormal * XMVector3Dot(velocityNormalized, collisionNormal);
+							XMVECTOR desiredMotion = velocityNormalized - undesiredMotion;
+							velocity = desiredMotion * velocityLen;
+							position += collisionNormal * penetration_depth;
+							break;
+						}
+					}
+				}
+
+				// Some other things also updated at fixed rate:
+				character.facing = wi::math::Lerp(character.facing, character.facing_next, 0.05f); // smooth turning
+				character.facing.y = 0;
+				XMVECTOR facing_next = XMVector3Normalize(XMLoadFloat3(&character.facing_next));
+				XMVECTOR facing = XMVector3Normalize(XMLoadFloat3(&character.facing));
+				XMStoreFloat3(&character.facing, facing);
+				XMVECTOR facediff = XMVector3TransformNormal(facing_next - facing, facing_rot);
+				float velocity_leaning = clamp(XMVectorGetX(facediff * XMVector3Length(XMVectorSetY(velocity, 0))) * 0.08f, -leaning_limit, leaning_limit);
+				character.leaning_next = lerp(character.leaning_next, velocity_leaning, 0.05f);
+				character.leaning = lerp(character.leaning, character.leaning_next, 0.05f);
+			}
+			character.accumulator = clamp(character.accumulator, 0.0f, timestep);
+			character.alpha = character.accumulator / timestep;
+
+			if (platform_velocity_count > 0)
+			{
+				position += platform_velocity_accumulation / platform_velocity_count;
+			}
+			position += XMVectorSet(0, swim_offset, 0, 0);
+
+			// Simple animation blending:
+			for (Entity animEntity : character.animations)
+			{
+				AnimationComponent* animation = animations.GetComponent(animEntity);
+				if (animation == nullptr)
+					continue;
+				if (animEntity == character.currentAnimation)
+				{
+					if (character.reset_anim)
+					{
+						character.reset_anim = false;
+						animation->timer = animation->start;
+					}
+					animation->amount = clamp(animation->amount + dt, 0.0f, character.anim_amount);
+					animation->Play();
+					character.anim_ended = animation->timer >= animation->end;
+				}
+				else
+				{
+					animation->amount = clamp(animation->amount - dt, 0.0f, 0.1f);
+					if (animation->amount <= 0)
+					{
+						animation->Stop();
+					}
+				}
+			}
+
+			// Try to put water ripple under character:
+			float horizontal_velocity_length = XMVectorGetX(XMVector3Length(XMVectorSetY(velocity, 0)));
+			if (horizontal_velocity_length > 0.01)
+			{
+				XMFLOAT3 ocean_pos = GetOceanPosAt(character.position);
+				if (character.position.y < ocean_pos.y)
+				{
+					PutWaterRipple(XMFLOAT3(character.position.x, ocean_pos.y, character.position.z));
+				}
+				else
+				{
+					Capsule capsule = Capsule(position, position + height, character.width);
+					CapsuleIntersectionResult result = Intersects(capsule, FILTER_WATER);
+					if (result.entity != INVALID_ENTITY)
+					{
+						PutWaterRipple(result.position);
+					}
+				}
+			}
+
+			XMStoreFloat3(&character.position, position);
+			XMStoreFloat3(&character.velocity, velocity);
+			character.movement = XMFLOAT3(0, 0, 0);
+
+			// Apply character transformation on transform component:
+			TransformComponent* transform = transforms.GetComponent(entity);
+			if (transform != nullptr)
+			{
+				facing_rot = XMMatrixInverse(nullptr, facing_rot);
+
+				XMVECTOR quat = XMQuaternionRotationMatrix(facing_rot * rotY);
+				XMStoreFloat4(&transform->rotation_local, quat);
+				transform->RotateRollPitchYaw(XMFLOAT3(0, 0, character.leaning * XM_PI));
+
+				transform->scale_local = XMFLOAT3(character.scale, character.scale, character.scale);
+
+				transform->translation_local = character.GetPositionInterpolated();
+
+				XMVECTOR offset = XMLoadFloat3(&character.relative_offset);
+				offset = XMVector3TransformNormal(offset, facing_rot);
+				transform->Translate(offset);
+
+				transform->SetDirty();
+			}
+
+			if (character.process_goal && character.voxelgrid != nullptr)
+			{
+				character.process_goal = false;
+				wi::jobsystem::Execute(character_pathfinding_ctx, [&](wi::jobsystem::JobArgs args) {
+					character.pathquery.process(character.position, character.goal, *character.voxelgrid);
+				});
+			}
+
+		});
+		wi::jobsystem::Wait(ctx);
 	}
 
 	Scene::RayIntersectionResult Scene::Intersects(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod) const
@@ -5267,7 +5825,7 @@ namespace wi::scene
 
 		return result;
 	}
-	bool Scene::IntersectsFirst(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod) const
+	bool Scene::IntersectsFirst(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod) const
 	{
 		bool result = false;
 
@@ -6257,6 +6815,7 @@ namespace wi::scene
 			p0 = SkinVertex(*mesh, *softbody, vertexID0);
 			p1 = SkinVertex(*mesh, *softbody, vertexID1);
 			p2 = SkinVertex(*mesh, *softbody, vertexID2);
+			P = XMVectorBaryCentric(p0, p1, p2, bary.x, bary.y);
 		}
 		else if (armature != nullptr && !armature->boneData.empty())
 		{
@@ -6334,6 +6893,11 @@ namespace wi::scene
 		return ocean.GetDisplacedPosition(worldPosition);
 	}
 
+	bool Scene::IsWetmapProcessingRequired() const
+	{
+		return wetmap_fadeout_time > 0;
+	}
+
 	void Scene::PutWaterRipple(const std::string& image, const XMFLOAT3& pos)
 	{
 		wi::Sprite img(image);
@@ -6347,7 +6911,9 @@ namespace wi::scene
 		img.params.siz = XMFLOAT2(1, 1);
 		img.params.quality = wi::image::QUALITY_ANISOTROPIC;
 		img.params.pivot = XMFLOAT2(0.5f, 0.5f);
+		locker.lock();
 		waterRipples.push_back(img);
+		locker.unlock();
 	}
 	void Scene::PutWaterRipple(const XMFLOAT3& pos)
 	{
@@ -6363,7 +6929,9 @@ namespace wi::scene
 		img.params.siz = XMFLOAT2(1, 1);
 		img.params.quality = wi::image::QUALITY_ANISOTROPIC;
 		img.params.pivot = XMFLOAT2(0.5f, 0.5f);
+		locker.lock();
 		waterRipples.push_back(img);
+		locker.unlock();
 	}
 
 	XMVECTOR SkinVertex(const MeshComponent& mesh, const wi::vector<ShaderTransform>& boneData, uint32_t index, XMVECTOR* N)
@@ -6453,7 +7021,7 @@ namespace wi::scene
 	void LoadModel2(const std::string& fileName, const XMMATRIX& transformMatrix, Entity rootEntity)
 	{
 		Scene scene;
-		LoadModel(scene, fileName, transformMatrix, rootEntity);
+		LoadModel2(scene, fileName, transformMatrix, rootEntity);
 		GetScene().Merge(scene);
 	}
 
@@ -6720,22 +7288,29 @@ namespace wi::scene
 
 	float Scene::GetHumanoidDefaultFacing(const HumanoidComponent& humanoid, Entity humanoidEntity) const
 	{
-		Entity left_shoulder = humanoid.bones[(size_t)HumanoidComponent::HumanoidBone::LeftUpperArm];
-		Entity right_shoulder = humanoid.bones[(size_t)HumanoidComponent::HumanoidBone::RightUpperArm];
-		XMVECTOR left_shoulder_pos = GetRestPose(left_shoulder).r[3];
-		XMVECTOR right_shoulder_pos = GetRestPose(right_shoulder).r[3];
-		const TransformComponent* transform = transforms.GetComponent(humanoidEntity);
-		if (transform != nullptr)
+		if (humanoid.default_facing == 0)
 		{
-			XMVECTOR S = transform->GetScaleV();
-			left_shoulder_pos *= S;
-			right_shoulder_pos *= S;
+			Entity left_shoulder = humanoid.bones[(size_t)HumanoidComponent::HumanoidBone::LeftUpperArm];
+			Entity right_shoulder = humanoid.bones[(size_t)HumanoidComponent::HumanoidBone::RightUpperArm];
+			XMVECTOR left_shoulder_pos = GetRestPose(left_shoulder).r[3];
+			XMVECTOR right_shoulder_pos = GetRestPose(right_shoulder).r[3];
+			const TransformComponent* transform = transforms.GetComponent(humanoidEntity);
+			if (transform != nullptr)
+			{
+				XMVECTOR S = transform->GetScaleV();
+				left_shoulder_pos *= S;
+				right_shoulder_pos *= S;
+			}
+			if (XMVectorGetX(right_shoulder_pos) < XMVectorGetX(left_shoulder_pos))
+			{
+				humanoid.default_facing = -1;
+			}
+			else
+			{
+				humanoid.default_facing = 1;
+			}
 		}
-		if (XMVectorGetX(right_shoulder_pos) < XMVectorGetX(left_shoulder_pos))
-		{
-			return -1;
-		}
-		return 1;
+		return humanoid.default_facing;
 	}
 
 	void Scene::ScanAnimationDependencies()

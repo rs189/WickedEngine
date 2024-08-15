@@ -205,6 +205,11 @@ namespace wi::renderer
 		const Visibility& vis,
 		wi::graphics::CommandList cmd
 	);
+	// Readback the ocean, can be on async compute or async copy
+	void ReadbackOcean(
+		const Visibility& vis,
+		wi::graphics::CommandList cmd
+	);
 
 	void UpdateRaytracingAccelerationStructures(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
 
@@ -312,7 +317,7 @@ namespace wi::renderer
 	// Call once per frame to render lightmaps
 	void RefreshLightmaps(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
 	// Call once per frame to render wetmaps
-	void RefreshWetmaps(const wi::scene::Scene& scene, wi::graphics::CommandList cmd);
+	void RefreshWetmaps(const Visibility& vis, wi::graphics::CommandList cmd);
 	// Run a compute shader that will resolve a MSAA depth buffer to a single-sample texture
 	void ResolveMSAADepthBuffer(const wi::graphics::Texture& dst, const wi::graphics::Texture& src, wi::graphics::CommandList cmd);
 	void DownsampleDepthBuffer(const wi::graphics::Texture& src, wi::graphics::CommandList cmd);
@@ -1020,9 +1025,6 @@ namespace wi::renderer
 	void SetShadowPropsCube(int max_resolution);
 
 
-
-	void SetTransparentShadowsEnabled(bool value);
-	float GetTransparentShadowsEnabled();
 	void SetWireRender(bool value);
 	bool IsWireRender();
 	void SetToDrawDebugBoneLines(bool param);
@@ -1219,6 +1221,10 @@ namespace wi::renderer
 	//	Returns the ID of the custom shader that can be used with MaterialComponent::SetCustomShaderID()
 	int RegisterCustomShader(const CustomShader& customShader);
 	const wi::vector<CustomShader>& GetCustomShaders();
+
+	// Thread-local barrier batching helpers:
+	void PushBarrier(const wi::graphics::GPUBarrier& barrier);
+	void FlushBarriers(wi::graphics::CommandList cmd);
 
 };
 

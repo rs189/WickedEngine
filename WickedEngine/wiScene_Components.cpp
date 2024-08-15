@@ -267,18 +267,16 @@ namespace wi::scene
 
 	void MaterialComponent::WriteShaderMaterial(ShaderMaterial* dest) const
 	{
+		using namespace wi::math;
+
 		ShaderMaterial material;
-		material.baseColor = baseColor;
-		material.emissive_r11g11b10 = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(emissiveColor.x * emissiveColor.w, emissiveColor.y * emissiveColor.w, emissiveColor.z * emissiveColor.w));
-		material.specular_r11g11b10 = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(specularColor.x * specularColor.w, specularColor.y * specularColor.w, specularColor.z * specularColor.w));
+		material.init();
+		material.baseColor = pack_half4(baseColor);
+		material.emissive_cloak = pack_half4(XMFLOAT4(emissiveColor.x * emissiveColor.w, emissiveColor.y * emissiveColor.w, emissiveColor.z * emissiveColor.w, cloak));
+		material.specular = pack_half3(XMFLOAT3(specularColor.x * specularColor.w, specularColor.y * specularColor.w, specularColor.z * specularColor.w));
 		material.texMulAdd = texMulAdd;
-		material.roughness = roughness;
-		material.reflectance = reflectance;
-		material.metalness = metalness;
-		material.refraction = refraction;
-		material.normalMapStrength = (textures[NORMALMAP].resource.IsValid() ? normalMapStrength : 0);
-		material.parallaxOcclusionMapping = parallaxOcclusionMapping;
-		material.displacementMapping = displacementMapping;
+		material.roughness_reflectance_metalness_refraction = pack_half4(roughness, reflectance, metalness, refraction);
+		material.normalmap_pom_alphatest_displacement = pack_half4(normalMapStrength, parallaxOcclusionMapping, 1 - alphaRef, displacementMapping);
 		XMFLOAT4 sss = subsurfaceScattering;
 		sss.x *= sss.w;
 		sss.y *= sss.w;
@@ -289,96 +287,88 @@ namespace wi::scene
 			sss_inv.z = 1.0f / ((1 + sss.z) * (1 + sss.z)),
 			sss_inv.w = 1.0f / ((1 + sss.w) * (1 + sss.w))
 		);
-		material.subsurfaceScattering = sss;
-		material.subsurfaceScattering_inv = sss_inv;
+		material.subsurfaceScattering = pack_half4(sss);
+		material.subsurfaceScattering_inv = pack_half4(sss_inv);
 
 		if (shaderType == SHADERTYPE_WATER)
 		{
-			material.sheenColor_r11g11b10 = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(1 - extinctionColor.x, 1 - extinctionColor.y, 1 - extinctionColor.z));
+			material.sheenColor = pack_half3(XMFLOAT3(1 - extinctionColor.x, 1 - extinctionColor.y, 1 - extinctionColor.z));
 		}
 		else
 		{
-			material.sheenColor_r11g11b10 = wi::math::Pack_R11G11B10_FLOAT(XMFLOAT3(sheenColor.x, sheenColor.y, sheenColor.z));
+			material.sheenColor = pack_half3(XMFLOAT3(sheenColor.x, sheenColor.y, sheenColor.z));
 		}
-		material.sheenRoughness = sheenRoughness;
-		material.clearcoat = clearcoat;
-		material.clearcoatRoughness = clearcoatRoughness;
-		material.alphaTest = 1 - alphaRef;
+		material.transmission_sheenroughness_clearcoat_clearcoatroughness = pack_half4(transmission, sheenRoughness, clearcoat, clearcoatRoughness);
 		material.layerMask = layerMask;
-		material.transmission = transmission;
+		float _anisotropy_strength = 0;
+		float _anisotropy_rotation_sin = 0;
+		float _anisotropy_rotation_cos = 0;
+		float _blend_with_terrain_height_rcp = 0;
 		if (shaderType == SHADERTYPE_PBR_ANISOTROPIC)
 		{
-			material.anisotropy_strength = wi::math::Clamp(anisotropy_strength, 0, 0.99f);
-			material.anisotropy_rotation_sin = std::sin(anisotropy_rotation);
-			material.anisotropy_rotation_cos = std::cos(anisotropy_rotation);
-		}
-		else
-		{
-			material.anisotropy_strength = 0;
-			material.anisotropy_rotation_sin = 0;
-			material.anisotropy_rotation_cos = 0;
+			_anisotropy_strength = clamp(anisotropy_strength, 0.0f, 0.99f);
+			_anisotropy_rotation_sin = std::sin(anisotropy_rotation);
+			_anisotropy_rotation_cos = std::cos(anisotropy_rotation);
 		}
 		if (blend_with_terrain_height > 0)
 		{
-			material.blend_with_terrain_height_rcp = 1.0f / blend_with_terrain_height;
+			_blend_with_terrain_height_rcp = 1.0f / blend_with_terrain_height;
 		}
-		else
-		{
-			material.blend_with_terrain_height_rcp = 0;
-		}
-		material.stencilRef = wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef);
+		material.aniso_anisosin_anisocos_terrainblend = pack_half4(_anisotropy_strength, _anisotropy_rotation_sin, _anisotropy_rotation_cos, _blend_with_terrain_height_rcp);
 		material.shaderType = (uint)shaderType;
 		material.userdata = userdata;
 
-		material.options = 0;
+		material.options_stencilref = 0;
 		if (IsUsingVertexColors())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_USE_VERTEXCOLORS;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_USE_VERTEXCOLORS;
 		}
 		if (IsUsingSpecularGlossinessWorkflow())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_SPECULARGLOSSINESS_WORKFLOW;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_SPECULARGLOSSINESS_WORKFLOW;
 		}
 		if (IsOcclusionEnabled_Primary())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_PRIMARY;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_PRIMARY;
 		}
 		if (IsOcclusionEnabled_Secondary())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_SECONDARY;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_OCCLUSION_SECONDARY;
 		}
 		if (IsUsingWind())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_USE_WIND;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_USE_WIND;
 		}
 		if (IsReceiveShadow())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_RECEIVE_SHADOW;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_RECEIVE_SHADOW;
 		}
 		if (IsCastingShadow())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_CAST_SHADOW;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_CAST_SHADOW;
 		}
 		if (IsDoubleSided())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_DOUBLE_SIDED;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_DOUBLE_SIDED;
 		}
 		if (GetFilterMask() & FILTER_TRANSPARENT)
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_TRANSPARENT;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_TRANSPARENT;
 		}
 		if (userBlendMode == BLENDMODE_ADDITIVE)
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_ADDITIVE;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_ADDITIVE;
 		}
 		if (shaderType == SHADERTYPE_UNLIT)
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_UNLIT;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_UNLIT;
 		}
 		if (!IsVertexAODisabled())
 		{
-			material.options |= SHADERMATERIAL_OPTION_BIT_USE_VERTEXAO;
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_USE_VERTEXAO;
 		}
+
+		material.options_stencilref |= wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef) << 24u;
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		for (int i = 0; i < TEXTURESLOT_COUNT; ++i)
@@ -448,7 +438,7 @@ namespace wi::scene
 		{
 			return FILTER_TRANSPARENT | FILTER_WATER;
 		}
-		if (transmission > 0)
+		if (transmission > 0 || cloak > 0)
 		{
 			return FILTER_TRANSPARENT;
 		}
@@ -730,46 +720,27 @@ namespace wi::scene
 		{
 			// Determine minimum precision for positions:
 			const float target_precision = 1.0f / 1000.0f; // millimeter
-			position_format = Vertex_POS10::FORMAT;
+			position_format = Vertex_POS16::FORMAT;
 			for (size_t i = 0; i < vertex_positions.size(); ++i)
 			{
 				const XMFLOAT3& pos = vertex_positions[i];
 				const uint8_t wind = vertex_windweights.empty() ? 0xFF : vertex_windweights[i];
-				if (position_format == Vertex_POS10::FORMAT)
+				
+				Vertex_POS16 v;
+				v.FromFULL(aabb, pos, wind);
+				XMFLOAT3 p = v.GetPOS(aabb);
+				if (
+					std::abs(p.x - pos.x) <= target_precision &&
+					std::abs(p.y - pos.y) <= target_precision &&
+					std::abs(p.z - pos.z) <= target_precision &&
+					wind == v.GetWind()
+					)
 				{
-					Vertex_POS10 v;
-					v.FromFULL(aabb, pos, wind);
-					XMFLOAT3 p = v.GetPOS(aabb);
-					if (
-						std::abs(p.x - pos.x) <= target_precision &&
-						std::abs(p.y - pos.y) <= target_precision &&
-						std::abs(p.z - pos.z) <= target_precision &&
-						wind == v.GetWind()
-						)
-					{
-						// success, continue to next vertex with 8 bits
-						continue;
-					}
-					position_format = Vertex_POS16::FORMAT; // failed, increase to 16 bits
+					// success, continue to next vertex with 16 bits
+					continue;
 				}
-				if (position_format == Vertex_POS16::FORMAT)
-				{
-					Vertex_POS16 v;
-					v.FromFULL(aabb, pos, wind);
-					XMFLOAT3 p = v.GetPOS(aabb);
-					if (
-						std::abs(p.x - pos.x) <= target_precision &&
-						std::abs(p.y - pos.y) <= target_precision &&
-						std::abs(p.z - pos.z) <= target_precision &&
-						wind == v.GetWind()
-						)
-					{
-						// success, continue to next vertex with 16 bits
-						continue;
-					}
-					position_format = vertex_windweights.empty() ? Vertex_POS32::FORMAT : Vertex_POS32W::FORMAT; // failed, increase to 32 bits
-					break; // since 32 bit is the max, we can bail out
-				}
+				position_format = vertex_windweights.empty() ? Vertex_POS32::FORMAT : Vertex_POS32W::FORMAT; // failed, increase to 32 bits
+				break; // since 32 bit is the max, we can bail out
 			}
 
 			if (IsFormatUnorm(position_format))
@@ -865,22 +836,6 @@ namespace wi::scene
 			// vertexBuffer - POSITION + WIND:
 			switch (position_format)
 			{
-			case Vertex_POS10::FORMAT:
-			{
-				vb_pos_wind.offset = buffer_offset;
-				vb_pos_wind.size = vertex_positions.size() * sizeof(Vertex_POS10);
-				Vertex_POS10* vertices = (Vertex_POS10*)(buffer_data + buffer_offset);
-				buffer_offset += AlignTo(vb_pos_wind.size, alignment);
-				for (size_t i = 0; i < vertex_positions.size(); ++i)
-				{
-					XMFLOAT3 pos = vertex_positions[i];
-					const uint8_t wind = vertex_windweights.empty() ? 0xFF : vertex_windweights[i];
-					Vertex_POS10 vert;
-					vert.FromFULL(aabb, pos, wind);
-					std::memcpy(vertices + i, &vert, sizeof(vert));
-				}
-			}
-			break;
 			case Vertex_POS16::FORMAT:
 			{
 				vb_pos_wind.offset = buffer_offset;
@@ -2390,4 +2345,133 @@ namespace wi::scene
 		wi::audio::CreateSoundInstance(&soundResource.GetSound(), &soundinstance);
 	}
 
+	void CharacterComponent::Move(const XMFLOAT3& direction)
+	{
+		movement = direction;
+	}
+	void CharacterComponent::Strafe(const XMFLOAT3& direction)
+	{
+		XMMATRIX facing_rot = XMMatrixLookToLH(XMVectorZero(), XMLoadFloat3(&facing), XMVectorSet(0, 1, 0, 0));
+		facing_rot = XMMatrixInverse(nullptr, facing_rot);
+		XMVECTOR dir = XMLoadFloat3(&direction);
+		dir = XMVector3TransformNormal(dir, facing_rot);
+		XMFLOAT3 absolute_direction;
+		XMStoreFloat3(&absolute_direction, dir);
+		Move(absolute_direction);
+	}
+	void CharacterComponent::Jump(float amount)
+	{
+		velocity.y = amount;
+	}
+	void CharacterComponent::Turn(const XMFLOAT3& direction)
+	{
+		XMVECTOR F = XMLoadFloat3(&facing);
+		float dot = XMVectorGetX(XMVector3Dot(F, XMLoadFloat3(&direction)));
+		if (dot < 0)
+		{
+			// help with turning around 180 degrees:
+			XMStoreFloat3(&facing, XMVector3TransformNormal(F, XMMatrixRotationY(XM_PI * 0.01f)));
+		}
+		facing_next = direction;
+	}
+	void CharacterComponent::Lean(float amount)
+	{
+		leaning_next = amount;
+	}
+	void CharacterComponent::AddAnimation(Entity entity)
+	{
+		animations.push_back(entity);
+	}
+	void CharacterComponent::PlayAnimation(Entity entity)
+	{
+		if (currentAnimation != entity)
+		{
+			reset_anim = true;
+			currentAnimation = entity;
+		}
+	}
+	void CharacterComponent::StopAnimation()
+	{
+		currentAnimation = INVALID_ENTITY;
+	}
+	void CharacterComponent::SetAnimationAmount(float amount)
+	{
+		anim_amount = amount;
+	}
+	float CharacterComponent::GetAnimationAmount() const
+	{
+		return anim_amount;
+	}
+	bool CharacterComponent::IsAnimationEnded() const
+	{
+		return anim_ended;
+	}
+	void CharacterComponent::SetPosition(const XMFLOAT3& value)
+	{
+		position = value;
+		position_prev = value;
+	}
+	XMFLOAT3 CharacterComponent::GetPosition() const
+	{
+		return position;
+	}
+	XMFLOAT3 CharacterComponent::GetPositionInterpolated() const
+	{
+		return wi::math::Lerp(position_prev, position, alpha);
+	}
+	void CharacterComponent::SetVelocity(const XMFLOAT3& value)
+	{
+		velocity = value;
+	}
+	XMFLOAT3 CharacterComponent::GetVelocity() const
+	{
+		return velocity;
+	}
+	Capsule CharacterComponent::GetCapsule() const
+	{
+		return Capsule(Sphere(position, width), height);
+	}
+	void CharacterComponent::SetFacing(const XMFLOAT3& value)
+	{
+		facing_next = value;
+		facing = value;
+	}
+	XMFLOAT3 CharacterComponent::GetFacing() const
+	{
+		return facing_next;
+	}
+	XMFLOAT3 CharacterComponent::GetFacingSmoothed() const
+	{
+		return facing;
+	}
+	bool CharacterComponent::IsGrounded() const
+	{
+		return ground_intersect;
+	}
+	bool CharacterComponent::IsSwimming() const
+	{
+		return swimming;
+	}
+	void CharacterComponent::SetFootPlacementEnabled(bool value)
+	{
+		foot_placement_enabled = value;
+	}
+	bool CharacterComponent::IsFootPlacementEnabled() const
+	{
+		return foot_placement_enabled;
+	}
+	void CharacterComponent::SetPathGoal(const XMFLOAT3& goal, const wi::VoxelGrid* voxelgrid)
+	{
+		this->goal = goal;
+		this->voxelgrid = voxelgrid;
+		process_goal = true;
+	}
+	void CharacterComponent::SetActive(bool value)
+	{
+		active = value;
+	}
+	bool CharacterComponent::IsActive() const
+	{
+		return active;
+	}
 }
